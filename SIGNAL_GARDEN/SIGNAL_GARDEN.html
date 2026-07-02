@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIGNAL GARDEN v5</title>
+<style>
+  html,body{margin:0;height:100%;background:#050607;overflow:hidden;}
+  body{display:flex;flex-direction:column;align-items:center;justify-content:center;
+       font-family:"SF Mono",Menlo,Consolas,monospace;color:#7a8087;cursor:crosshair;}
+  canvas{display:block;image-rendering:pixelated;}
+  #bar{position:fixed;left:12px;bottom:10px;font-size:10px;letter-spacing:.12em;
+       user-select:none;opacity:.7;pointer-events:none;}
+  #bar b{color:#c9ced4;font-weight:normal;}
+  #hint{position:fixed;right:12px;bottom:10px;font-size:10px;letter-spacing:.1em;opacity:.45;
+       user-select:none;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="bar"><b>SIGNAL GARDEN</b> v5 · <span id="epochLabel"></span> · <span id="evt"></span> ·
+  CACHES <span id="cacheLabel">0/0</span> · #<span id="hashLabel"></span></div>
+<div id="hint">drag to disturb · catch the cursor · R new · P pause · S save</div>
+<script>
+"use strict";
+/* ============================================================
+   SIGNAL GARDEN v5 — the field hides things.
+   Catch the roaming SEC cursor with a disturbance to breach the
+   surface and reveal one of the hash-seeded secrets beneath.
+   ============================================================ */
+
+/* ---------- deterministic PRNG ---------- */
+function cyrb128(str){let h1=1779033703,h2=3144134277,h3=1013904242,h4=2773480762;
+  for(let i=0,k;i<str.length;i++){k=str.charCodeAt(i);
+    h1=h2^Math.imul(h1^k,597399067);h2=h3^Math.imul(h2^k,2869860233);
+    h3=h4^Math.imul(h3^k,951274213);h4=h1^Math.imul(h4^k,2716044179);}
+  h1=Math.imul(h3^(h1>>>18),597399067);h2=Math.imul(h4^(h2>>>22),2869860233);
+  h3=Math.imul(h1^(h3>>>17),951274213);h4=Math.imul(h2^(h4>>>19),2716044179);
+  h1^=h2^h3^h4;h2^=h1;h3^=h1;h4^=h1;return[h1>>>0,h2>>>0,h3>>>0,h4>>>0];}
+function sfc32(a,b,c,d){return function(){a>>>=0;b>>>=0;c>>>=0;d>>>=0;
+  let t=(a+b)|0;a=b^b>>>9;b=c+(c<<3)|0;c=(c<<21|c>>>11)|0;d=d+1|0;t=t+d|0;c=c+t|0;
+  return(t>>>0)/4294967296;};}
+const B58="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function newHash(){let s="oo";for(let i=0;i<49;i++)s+=B58[(Math.random()*B58.length)|0];return s;}
+function makeR(h){const s=cyrb128(h);return sfc32(s[0],s[1],s[2],s[3]);}
+function shuffle(a,rng){for(let i=a.length-1;i>0;i--){const j=(rng()*(i+1))|0;
+  const t=a[i];a[i]=a[j];a[j]=t;}return a;}
+
+/* ---------- seeded value-noise ---------- */
+let PERM=new Uint8Array(512);
+function buildPerm(rng){const p=new Uint8Array(256);
+  for(let i=0;i<256;i++)p[i]=i;
+  for(let i=255;i>0;i--){const j=(rng()*(i+1))|0;const t=p[i];p[i]=p[j];p[j]=t;}
+  for(let i=0;i<512;i++)PERM[i]=p[i&255];}
+function fade(t){return t*t*t*(t*(t*6-15)+10);}
+function hgrad(h,x,y,z){const g=h&15;
+  const u=g<8?x:y,v=g<4?y:(g===12||g===14?x:z);
+  return((g&1)?-u:u)+((g&2)?-v:v);}
+function noise3(x,y,z){
+  const X=Math.floor(x)&255,Y=Math.floor(y)&255,Z=Math.floor(z)&255;
+  x-=Math.floor(x);y-=Math.floor(y);z-=Math.floor(z);
+  const u=fade(x),v=fade(y),w=fade(z);
+  const A=PERM[X]+Y,AA=PERM[A]+Z,AB=PERM[A+1]+Z,B=PERM[X+1]+Y,BA=PERM[B]+Z,BB=PERM[B+1]+Z;
+  const L=(t,a,b)=>a+t*(b-a);
+  return L(w,
+    L(v,L(u,hgrad(PERM[AA],x,y,z),hgrad(PERM[BA],x-1,y,z)),
+        L(u,hgrad(PERM[AB],x,y-1,z),hgrad(PERM[BB],x-1,y-1,z))),
+    L(v,L(u,hgrad(PERM[AA+1],x,y,z-1),hgrad(PERM[BA+1],x-1,y,z-1)),
+        L(u,hgrad(PERM[AB+1],x,y-1,z-1),hgrad(PERM[BB+1],x-1,y-1,z-1))));}
+function fbm(x,y,z,oct){let a=0.5,f=1,s=0;
+  for(let i=0;i<oct;i++){s+=a*noise3(x*f,y*f,z*f);a*=0.5;f*=2.02;}return s;}
+
+/* ---------- glyphs & moods ---------- */
+const RAMPS=[
+  " ·∙:∴-=≡+*x※#%@█",
+  " .`',;:!|/(){}[]#$█",
+  " ・。゠ヽミシツキタホ密実█",
+  " ─│┼╋▚▞▙▟█",
+  " ..--~~==<>{}◇◆█",
+];
+const ACCENT_GLYPHS="◆▲█@#※";
+const RAIN_GLYPHS="|:;!¦ǀ丨";
+const MOODS=[
+  {name:"VERDANT", base:[122,132,120], hi:[196,210,190], acc:"#9dff3b", turb:0.9,  drift:[ .06, .02]},
+  {name:"HEMATIC", base:[130,116,116], hi:[214,190,190], acc:"#ff4030", turb:1.25, drift:[-.04, .05]},
+  {name:"ABYSSAL", base:[108,118,132], hi:[182,196,214], acc:"#35e0ff", turb:0.7,  drift:[ .02,-.06]},
+  {name:"SODIUM",  base:[132,126,108], hi:[214,204,180], acc:"#ffb020", turb:1.05, drift:[-.07,-.02]},
+  {name:"ASH",     base:[118,118,120], hi:[200,200,204], acc:"#e6e6e6", turb:0.55, drift:[ .03, .03]},
+];
+const EPOCH_SEC=40, XFADE=6;
+
+/* ---------- secrets (v3) ---------- */
+const FRAGMENTS=[
+  "THE GARDEN REMEMBERS EVERY HAND",
+  "SIGNAL PRECEDES SOURCE",
+  "IT GROWS WHEN UNOBSERVED",
+  "DO NOT NAME THE ORBITER",
+  "THE NOISE IS A DOOR",
+  "YOU WERE ALWAYS PART OF THE FIELD",
+  "COUNT THE EPOCHS BACKWARDS",
+  "BENEATH THE RAIN, A SECOND RAIN",
+  "THE CURSOR DREAMS OF STOPPING",
+  "EVERY GLYPH IS A GRAVE MARKER",
+];
+const REVEAL_SEC=7, COOLDOWN_SEC=8;
+
+/* ---------- state ---------- */
+let HASH,R,rampOrder=[],moodOrder=[],entities=[],events=[];
+let secrets=[],found=0;
+let breach=null;           // {start, x,y,w,h (cells), secret}
+let lastSealAt=-1e9;
+let t0=performance.now(),paused=false,pausedAt=0;
+const cv=document.getElementById("cv"),ctx=cv.getContext("2d");
+let COLS,ROWS,CW,CH,FONT;
+let disturbances=[];
+const DECAY=0.34;
+let pointerU=-1,pointerV=-1;   // for proximity flicker
+
+function build(hash){
+  HASH=hash;R=makeR(hash);
+  buildPerm(R);
+  rampOrder=shuffle([...RAMPS.keys()],R);
+  moodOrder=shuffle([...MOODS.keys()],R);
+  entities=[];
+  const n=3+(R()*3|0);
+  for(let i=0;i<n;i++){
+    const kind=(R()*3)|0;
+    entities.push({kind,x:R(),y:R(),r:0.10+R()*0.22,
+      spd:0.004+R()*0.012,ph:R()*Math.PI*2,dir:R()<0.5?1:-1,amp:0.05+R()*0.2});
+  }
+  events=[];
+  for(let ep=0;ep<512;ep++){
+    const k=R();
+    const count=k<0.35?0:(k<0.85?1:2);
+    for(let c=0;c<count;c++){
+      const kind=["SWEEP","RAIN","BLOOM"][(R()*3)|0];
+      const start=ep*EPOCH_SEC+4+R()*(EPOCH_SEC-14);
+      const dur=kind==="SWEEP"?7:kind==="RAIN"?9:6;
+      events.push({kind,start,dur,u:R(),v:R(),seed:(R()*1e9)|0});
+    }
+  }
+  /* v3: seed the secret deck — deterministic per hash */
+  secrets=[];
+  const fragIdx=shuffle([...FRAGMENTS.keys()],R);
+  for(let i=0;i<5;i++) secrets.push({type:"SIGIL",  seed:(R()*1e9)|0, tag:"Δ-"+String((R()*89+10)|0)});
+  for(let i=0;i<4;i++) secrets.push({type:"FRAGMENT",text:FRAGMENTS[fragIdx[i]], tag:"TX-"+String((R()*89+10)|0)});
+  for(let i=0;i<2;i++) secrets.push({type:"KEY",    seed:(R()*1e9)|0, tag:"K-"+String((R()*89+10)|0)});
+  secrets.push({type:"CORE", seed:(R()*1e9)|0, tag:"∞"});
+  shuffle(secrets,R);
+  for(const s of secrets) s.warp=["RADIAL","RECT","SLIT"][(R()*3)|0];   // v5: warp personality
+  found=0;breach=null;lastSealAt=-1e9;disturbances=[];
+  t0=performance.now();
+  document.getElementById("hashLabel").textContent=hash.slice(0,10)+"…";
+  document.getElementById("cacheLabel").textContent="0/"+secrets.length;
+}
+
+/* ---------- sizing ---------- */
+function resize(){
+  const dpr=Math.min(2,window.devicePixelRatio||1);
+  const w=window.innerWidth,h=window.innerHeight;
+  CW=11;CH=15;
+  COLS=Math.floor(w/CW);ROWS=Math.floor((h-8)/CH);
+  cv.width=COLS*CW*dpr;cv.height=ROWS*CH*dpr;
+  cv.style.width=(COLS*CW)+"px";cv.style.height=(ROWS*CH)+"px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle="#050607";ctx.fillRect(0,0,COLS*CW,ROWS*CH);
+  FONT="12px 'SF Mono',Menlo,Consolas,monospace";
+}
+window.addEventListener("resize",resize);
+
+/* ---------- influences ---------- */
+function wrapd(dx){dx=((dx%1)+1)%1;return dx>0.5?dx-1:dx;}
+function entityInfluence(u,v,t){
+  let d=0;
+  for(const e of entities){
+    if(e.kind===0){
+      const ex=(e.x+Math.cos(e.ph+t*e.spd*40)*0.08+t*e.spd*e.dir)%1;
+      const ey=(e.y+Math.sin(e.ph+t*e.spd*33)*0.06+1)%1;
+      const q=Math.hypot(wrapd(u-ex),v-ey)/e.r;
+      if(q<1)d+=(1-q)*(1-q)*e.amp*3;
+    }else if(e.kind===1){
+      const s=Math.sin((u+v)*6.28*1.5+e.ph+t*e.spd*20*e.dir);
+      d+=Math.max(0,s-0.75)*e.amp*2.5;
+    }else{
+      const ex=0.5+Math.cos(e.ph+t*e.spd*15*e.dir)*0.33;
+      const ey=0.5+Math.sin(e.ph+t*e.spd*11*e.dir)*0.33;
+      const q=Math.hypot(u-ex,v-ey)/e.r;
+      if(q<1)d-=(1-q)*e.amp*3;
+    }
+  }
+  return d;
+}
+function disturbInfluence(u,v,now){
+  let d=0;
+  for(const s of disturbances){
+    const age=(now-s.born)/1000;
+    if(age>3)continue;
+    const q=Math.hypot(u-s.u,v-s.v)/0.09;
+    if(q<1)d+=(1-q)*(1-q)*0.7*Math.exp(-age*1.6);
+  }
+  return d;
+}
+
+/* ---------- SEC cursor path ---------- */
+function cursorPos(t){
+  return {u:0.5+0.42*Math.cos(t*0.05), v:0.5+0.38*Math.sin(t*0.037)};
+}
+
+/* ---------- v3: breach trigger ---------- */
+let lastStir=0;
+function stir(x,y){
+  const now=performance.now();
+  if(now-lastStir<18)return;
+  lastStir=now;
+  const r=cv.getBoundingClientRect();
+  const u=(x-r.left)/r.width, v=(y-r.top)/r.height;
+  disturbances.push({u,v,born:now});
+  if(disturbances.length>140)disturbances.splice(0,disturbances.length-140);
+
+  // breach check: within reach of the SEC box, none active, cooldown elapsed
+  const t=(now-t0)/1000;
+  if(breach||found>=secrets.length)return;
+  if(t-lastSealAt<COOLDOWN_SEC)return;
+  const c=cursorPos(t);
+  const dx=(u-c.u)*COLS*CW, dy=(v-c.v)*ROWS*CH;   // px distance
+  if(Math.hypot(dx,dy)<CW*4.5){
+    const secret=secrets[found];
+    // window in cell coords, clamped on screen
+    const w=Math.min(36,COLS-4), h=13;
+    const bx=Math.max(2,Math.min(COLS-w-2,(c.u*COLS|0)-(w>>1)));
+    const by=Math.max(2,Math.min(ROWS-h-2,(c.v*ROWS|0)-(h>>1)));
+    breach={start:t,x:bx,y:by,w,h,secret};
+  }
+}
+cv.addEventListener("pointermove",e=>{
+  const r=cv.getBoundingClientRect();
+  pointerU=(e.clientX-r.left)/r.width; pointerV=(e.clientY-r.top)/r.height;
+  if(e.buttons||e.pointerType==="touch")stir(e.clientX,e.clientY);
+});
+cv.addEventListener("pointerdown",e=>stir(e.clientX,e.clientY));
+cv.addEventListener("pointerleave",()=>{pointerU=-1;pointerV=-1;});
+
+/* ---------- phenomena ---------- */
+function activeEvents(t){
+  const out=[];
+  for(const ev of events)
+    if(t>=ev.start&&t<ev.start+ev.dur)out.push({...ev,ph:(t-ev.start)/ev.dur});
+  return out;
+}
+function eventInfluence(u,v,act){
+  let d=0,accB=0;
+  for(const ev of act){
+    if(ev.kind==="SWEEP"){
+      const x=ev.ph*1.2-0.1,q=Math.abs(u-x)/0.055;
+      if(q<1){const w=(1-q)*Math.sin(Math.PI*Math.min(1,ev.ph*4));d+=w*0.5;accB+=w*0.12;}
+    }else if(ev.kind==="BLOOM"){
+      const rad=ev.ph*0.5,q=Math.abs(Math.hypot(u-ev.u,v-ev.v)-rad)/0.04;
+      if(q<1){const w=(1-q)*(1-ev.ph);d+=w*0.55;accB+=w*0.2;}
+    }
+  }
+  return{d,accB};
+}
+function drawRain(act,t,acc){
+  for(const ev of act){
+    if(ev.kind!=="RAIN")continue;
+    const rr=makeR(HASH+":"+ev.seed);
+    const nCols=8+(rr()*10|0),env=Math.sin(Math.PI*ev.ph);
+    for(let c=0;c<nCols;c++){
+      const col=(rr()*COLS)|0,spd=8+rr()*22,off=rr()*ROWS,len=4+(rr()*9|0);
+      const head=((t-ev.start)*spd+off)%(ROWS+len);
+      for(let k=0;k<len;k++){
+        const row=(head-k)|0;
+        if(row<0||row>=ROWS)continue;
+        ctx.globalAlpha=env*(1-k/len)*0.85;
+        ctx.fillStyle=k===0?acc:"#aeb4ba";
+        ctx.fillText(RAIN_GLYPHS[(col+row)%RAIN_GLYPHS.length],col*CW,row*CH);
+      }
+    }
+    ctx.globalAlpha=1;
+  }
+}
+
+/* ---------- epochs ---------- */
+function epochInfo(t){
+  const et=t/EPOCH_SEC,i=Math.floor(et),frac=et-i;
+  const mA=MOODS[moodOrder[i%moodOrder.length]];
+  const mB=MOODS[moodOrder[(i+1)%moodOrder.length]];
+  const rampA=RAMPS[rampOrder[i%rampOrder.length]];
+  const rampB=RAMPS[rampOrder[(i+1)%rampOrder.length]];
+  const xf=Math.max(0,(frac-1+XFADE/EPOCH_SEC)/(XFADE/EPOCH_SEC));
+  return{i,mA,mB,rampA,rampB,xf};
+}
+const mix=(a,b,t)=>a+(b-a)*t;
+const mixc=(a,b,t)=>[mix(a[0],b[0],t)|0,mix(a[1],b[1],t)|0,mix(a[2],b[2],t)|0];
+
+/* ---------- v4: breach rendering — warp reveal, no window ---------- */
+function smooth01(x){x=Math.max(0,Math.min(1,x));return x*x*(3-2*x);}
+function drawBreach(t,acc){
+  if(!breach)return false;
+  const ph=(t-breach.start)/REVEAL_SEC;
+  if(ph>=1){ lastSealAt=t; found++; breach=null;
+    document.getElementById("cacheLabel").textContent=found+"/"+secrets.length;
+    return false; }
+  const s=breach.secret;
+
+  if(s.type==="CORE"){ drawCore(ph,acc); return true; }
+
+  const env=smooth01(Math.min(1,ph/0.17))*smooth01(Math.min(1,(1-ph)/0.17));
+  if(env<0.35)return true;                 // field is still parting
+  const a=Math.min(1,(env-0.35)/0.5);
+  const cx=(breach.x+breach.w/2)*CW, cy=(breach.y+breach.h/2)*CH;
+
+  ctx.textAlign="center"; ctx.globalAlpha=a*0.6;
+  ctx.fillStyle="#5b6066"; ctx.font="9px monospace";
+  ctx.fillText(s.type+" "+s.tag, cx, cy-breach.h*CH*0.34);
+  ctx.globalAlpha=a;
+
+  if(s.type==="SIGIL"){
+    const rr=makeR(HASH+":sig:"+s.seed);
+    const cell=Math.min(breach.h*CH,breach.w*CW)*0.09;
+    const ox=cx-cell*3.5, oy=cy-cell*3.5+4;
+    for(let j=0;j<7;j++){
+      const row=[]; for(let i=0;i<4;i++)row[i]=rr()<0.45;
+      for(let i=0;i<7;i++){
+        const on=i<4?row[i]:row[6-i];
+        if(!on)continue;
+        if((j*7+i)/49 > (ph-0.15)/0.5) continue;   // materializes cell by cell
+        ctx.fillStyle=acc;
+        ctx.fillRect(ox+i*cell+1,oy+j*cell+1,cell-2,cell-2);
+      }
+    }
+  }else if(s.type==="FRAGMENT"){
+    const nCh=Math.max(0,((ph-0.15)/0.55)*s.text.length)|0;
+    ctx.fillStyle="#dfe3e8"; ctx.font="13px monospace";
+    ctx.fillText(s.text.slice(0,nCh)+(nCh<s.text.length?"▌":""), cx, cy-6);
+  }else if(s.type==="KEY"){
+    const rr=makeR(HASH+":key:"+s.seed);
+    let hexs=""; for(let i=0;i<16;i++)hexs+="0123456789ABCDEF"[(rr()*16)|0];
+    const nCh=Math.max(0,((ph-0.15)/0.5)*hexs.length)|0;
+    ctx.fillStyle=acc; ctx.font="16px monospace";
+    ctx.fillText("⟨"+hexs.slice(0,nCh)+"⟩", cx, cy-9);
+  }
+  ctx.textAlign="left"; ctx.globalAlpha=1; ctx.font=FONT;
+  return true;
+}
+function drawCore(ph,acc){
+  // the field flinches: fullscreen inversion pulse + designation
+  const env=Math.sin(Math.PI*Math.min(1,ph*1.0));
+  ctx.fillStyle="rgba(255,255,255,"+(0.10*env)+")";
+  ctx.fillRect(0,0,COLS*CW,ROWS*CH);
+  ctx.strokeStyle=acc; ctx.globalAlpha=0.7*env; ctx.lineWidth=2;
+  ctx.strokeRect(6.5,6.5,COLS*CW-13,ROWS*CH-13);
+  ctx.globalAlpha=env;
+  ctx.fillStyle=acc; ctx.font="22px monospace"; ctx.textAlign="center";
+  ctx.fillText("THE CORE", COLS*CW/2, ROWS*CH/2-24);
+  ctx.font="11px monospace"; ctx.fillStyle="#dfe3e8";
+  ctx.fillText("IT SAW YOU BACK", COLS*CW/2, ROWS*CH/2+4);
+  ctx.textAlign="left"; ctx.globalAlpha=1; ctx.font=FONT;
+}
+
+/* ---------- SEC cursor (locks to breach, flickers on proximity) ---------- */
+function cursorMark(t,acc){
+  let u,v,label;
+  if(breach&&breach.secret.type!=="CORE"){
+    u=(breach.x+breach.w/2)/COLS; v=(breach.y-1)/ROWS; label="BREACH";
+  }else{
+    const c=cursorPos(t); u=c.u; v=c.v;
+    label="SEC "+((u*99)|0)+":"+((v*99)|0);
+  }
+  const near = pointerU>=0 && Math.hypot((pointerU-u)*COLS*CW,(pointerV-v)*ROWS*CH)<CW*9;
+  const x=(u*COLS|0)*CW,y=(v*ROWS|0)*CH;
+  const flick = near ? (0.55+0.45*Math.abs(Math.sin(t*18))) : 0.5;
+  ctx.strokeStyle=acc;ctx.globalAlpha=breach?0.95:flick;ctx.lineWidth=1;
+  ctx.strokeRect(x-CW*2+0.5,y-CH+0.5,CW*4,CH*2);
+  ctx.globalAlpha=0.9;ctx.fillStyle=acc;ctx.font="9px monospace";
+  ctx.fillText(near&&!breach?label+" ?":label, x+CW*2+4, y-CH+2);
+  ctx.globalAlpha=1;ctx.font=FONT;
+}
+
+/* ---------- main loop ---------- */
+function frame(){
+  requestAnimationFrame(frame);
+  if(paused)return;
+  const now=performance.now();
+  const t=(now-t0)/1000;
+  const E=epochInfo(t);
+  const act=activeEvents(t);
+  document.getElementById("epochLabel").textContent=
+    "EPOCH "+String(E.i).padStart(3,"0")+" "+(E.xf>0?E.mA.name+"→"+E.mB.name:E.mA.name);
+  document.getElementById("evt").textContent=
+    breach?"BREACH ACTIVE":(act.length?("EVENT: "+act.map(a=>a.kind).join("+")):"NOMINAL");
+
+  const turb=mix(E.mA.turb,E.mB.turb,E.xf);
+  const dr=[mix(E.mA.drift[0],E.mB.drift[0],E.xf),mix(E.mA.drift[1],E.mB.drift[1],E.xf)];
+  const base=mixc(E.mA.base,E.mB.base,E.xf);
+  const hi=mixc(E.mA.hi,E.mB.hi,E.xf);
+  const acc=E.xf<0.5?E.mA.acc:E.mB.acc;
+
+  ctx.fillStyle="rgba(5,6,7,"+DECAY+")";
+  ctx.fillRect(0,0,COLS*CW,ROWS*CH);
+  ctx.font=FONT;ctx.textBaseline="top";
+
+  const zt=t*0.05*turb;
+  const aspect=(ROWS*CH)/(COLS*CW);
+  /* v4: breach warp — the field is displaced radially around the secret */
+  let WP=null;
+  if(breach&&breach.secret.type!=="CORE"){
+    const ph=(t-breach.start)/REVEAL_SEC;
+    const env=smooth01(Math.min(1,ph/0.17))*smooth01(Math.min(1,(1-ph)/0.17));
+    WP={cx:(breach.x+breach.w/2)*CW, cy:(breach.y+breach.h/2)*CH,
+        R:Math.max(breach.w*CW,breach.h*CH)*0.85,
+        Rx:breach.w*CW*0.62, Ry:breach.h*CH*0.80,
+        shape:breach.secret.warp||"RADIAL", env};
+  }
+  for(let j=0;j<ROWS;j++){
+    const v=j/ROWS;
+    for(let i=0;i<COLS;i++){
+      const u=i/COLS;
+      let f=fbm(u*3.2+t*dr[0],v*3.2*aspect+t*dr[1],zt,4);
+      f=f*0.5+0.5;
+      f+=0.06*Math.sin(t*0.35+v*9);
+      f+=entityInfluence(u,v,t);
+      f+=disturbInfluence(u,v,now);
+      const ei=eventInfluence(u,v,act);
+      f+=ei.d;
+      f=Math.max(0,Math.min(0.999,f));
+
+      const useB=E.xf>0&&((i*7349+j*1543)%1000)/1000<E.xf;
+      const ramp=useB?E.rampB:E.rampA;
+      const ch=ramp[(f*ramp.length)|0];
+      if(ch===" ")continue;
+
+      let px=i*CW, py=j*CH, al=1;
+      if(WP&&WP.env>0){
+        const dx=px+CW*0.5-WP.cx, dy=py+CH*0.5-WP.cy;
+        if(WP.shape==="RADIAL"){
+          const d=Math.hypot(dx,dy);
+          if(d<WP.R){
+            const q=1-d/WP.R;
+            const push=q*q*WP.env*WP.R*0.55;          // radial displacement
+            const ang=Math.atan2(dy,dx)+q*WP.env*0.6; // slight tangential shear
+            px=WP.cx+Math.cos(ang)*(d+push)-CW*0.5;
+            py=WP.cy+Math.sin(ang)*(d+push)-CH*0.5;
+            al=Math.min(1,d/(WP.R*0.42)); al*=al;
+            if(al<0.04)continue;
+          }
+        }else if(WP.shape==="RECT"){
+          const qx=Math.abs(dx)/WP.Rx, qy=Math.abs(dy)/WP.Ry, q=Math.max(qx,qy);
+          if(q<1){
+            const p=(1-q)*(1-q)*WP.env;               // pry apart along dominant axis
+            if(qx>=qy) px+=Math.sign(dx||1)*p*WP.Rx*0.75;
+            else       py+=Math.sign(dy||1)*p*WP.Ry*0.75;
+            al=Math.min(1,q/0.42); al*=al;
+            if(al<0.04)continue;
+          }
+        }else{ // SLIT — rows peel away from a horizontal centerline
+          if(Math.abs(dx)<WP.Rx*1.3){
+            const qy=Math.abs(dy)/WP.Ry;
+            if(qy<1){
+              const p=(1-qy)*(1-qy)*WP.env;
+              py+=Math.sign(dy||1)*p*WP.Ry*0.95;
+              px+=Math.sign(dy||1)*p*WP.Rx*0.05;      // faint skew, lips misalign
+              al=Math.min(1,qy/0.38); al*=al;
+              if(al<0.04)continue;
+            }
+          }
+        }
+      }
+      ctx.globalAlpha=al;
+      if(f>0.93-ei.accB){
+        ctx.fillStyle=acc;
+        ctx.fillText(ACCENT_GLYPHS[(i+j+E.i)%ACCENT_GLYPHS.length],px,py);
+      }else{
+        const b=f*f,c=mixc(base,hi,b);
+        ctx.fillStyle="rgb("+c[0]+","+c[1]+","+c[2]+")";
+        ctx.fillText(ch,px,py);
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+
+  drawRain(act,t,acc);
+  drawBreach(t,acc);
+  cursorMark(t,acc);
+  ctx.fillStyle="rgba(255,255,255,0.015)";
+  ctx.fillRect(0,(((t*8)%ROWS)|0)*CH,COLS*CW,CH);
+}
+
+/* ---------- controls ---------- */
+window.addEventListener("keydown",e=>{
+  if(e.key==="r"||e.key==="R")build(newHash());
+  else if(e.key==="p"||e.key==="P"){
+    if(!paused){paused=true;pausedAt=performance.now();}
+    else{t0+=performance.now()-pausedAt;paused=false;}
+  }else if(e.key==="s"||e.key==="S"){
+    const a=document.createElement("a");
+    a.download="signal_garden_"+HASH.slice(0,8)+".png";
+    a.href=cv.toDataURL("image/png");a.click();
+  }
+});
+
+/* ---------- boot ---------- */
+resize();
+build(location.hash?decodeURIComponent(location.hash.slice(1)):newHash());
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
