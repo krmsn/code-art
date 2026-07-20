@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HYPNIC</title>
+<style>
+  html,body{margin:0;width:100%;height:100%;background:#030307;overflow:hidden;overscroll-behavior:none;}
+  body{font-family:"SF Mono",Menlo,Consolas,monospace;cursor:crosshair;}
+  canvas{display:block;position:fixed;inset:0;width:100%;height:100%;}
+  body::after{content:"";position:fixed;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(to bottom,rgba(255,255,255,.015),
+    rgba(255,255,255,.015) 1px,transparent 1px,transparent 3px);
+    mix-blend-mode:overlay;opacity:.45;}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+"use strict";
+/* ============================================================
+   HYPNIC — RECTILINEAR DREAM ARCHITECTURE
+
+   The organic language-masses have been replaced by terminal
+   architecture: hollow frames, long rails, stacked slabs,
+   offset windows, and crossbar nodes. Formations may begin or
+   end beyond the canvas; the viewport only reveals a fragment.
+
+   Every generated mark belongs to a rectilinear vocabulary.
+   Structures condense, hold, fragment, and dissolve while the
+   original HYPNIC JERK shears the whole field.
+
+   Deterministic per hash · hover corrupts · click jerks ·
+   Space hold · R reseed · S save plate.
+   ============================================================ */
+
+/* ---------- seeded PRNG / hash noise ---------- */
+function cyrb128(str){let h1=1779033703,h2=3144135777,h3=1013904242,h4=2773480762;
+  for(let i=0,k;i<str.length;i++){k=str.charCodeAt(i);
+    h1=h2^Math.imul(h1^k,597399067);h2=h3^Math.imul(h2^k,2869860233);
+    h3=h4^Math.imul(h3^k,951274213);h4=h1^Math.imul(h4^k,2716044179);}
+  h1=Math.imul(h3^(h1>>>18),597399067);h2=Math.imul(h4^(h2>>>22),2869860233);
+  h3=Math.imul(h1^(h3>>>17),951274213);h4=Math.imul(h2^(h4>>>19),2716044179);
+  h1^=h2^h3^h4;h2^=h1;h3^=h1;h4^=h1;return[h1>>>0,h2>>>0,h3>>>0,h4>>>0];}
+function sfc32(a,b,c,d){return function(){a>>>=0;b>>>=0;c>>>=0;d>>>=0;
+  let t=(a+b)|0;a=b^b>>>9;b=c+(c<<3)|0;c=(c<<21|c>>>11)|0;d=d+1|0;t=t+d|0;c=c+t|0;
+  return(t>>>0)/4294967296;};}
+const B58="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function newHash(){let s="oo";for(let i=0;i<49;i++)s+=B58[Math.floor(Math.random()*B58.length)];return s;}
+function makeR(h){const s=cyrb128(h);return sfc32(s[0],s[1],s[2],s[3]);}
+let SEEDN=0.1;
+function h31(a,b,c){const n=Math.sin(a*127.1+b*311.7+c*74.7+SEEDN)*43758.5453;return n-Math.floor(n);}
+function vn(x,y,salt){
+  const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
+  const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+  const a=h31(xi,yi,salt),b=h31(xi+1,yi,salt),c=h31(xi,yi+1,salt),d=h31(xi+1,yi+1,salt);
+  return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;
+}
+function hsl(h,s,l){
+  h=((h%360)+360)%360;s=Math.max(0,Math.min(1,s));l=Math.max(0,Math.min(1,l));
+  const c=(1-Math.abs(2*l-1))*s,x=c*(1-Math.abs((h/60)%2-1)),m=l-c/2;
+  let r=0,g=0,b=0;
+  if(h<60){r=c;g=x;}else if(h<120){r=x;g=c;}else if(h<180){g=c;b=x;}
+  else if(h<240){g=x;b=c;}else if(h<300){r=x;b=c;}else{r=c;b=x;}
+  return[Math.floor((r+m)*255),Math.floor((g+m)*255),Math.floor((b+m)*255)];
+}
+const smooth=x=>{x=Math.max(0,Math.min(1,x));return x*x*(3-2*x);};
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ---------- rectilinear symbol language ---------- */
+const GLYPHS={
+  rails:["─","═","│","║","+","┼","╋","┬","┴","├","┤","╦","╩","╠","╣"],
+  corners:["┌","┐","└","┘","╔","╗","╚","╝"],
+  blocks:["░","▒","▓","█"],
+  sparse:[" "," ","·",".","+","─","│"],
+  corrupt:["█","▓","▒","░","═","║","+","┼","╋"]
+};
+const FRAMESETS=[
+  {tl:"┌",tr:"┐",bl:"└",br:"┘",hz:"─",vt:"│",jt:"┼"},
+  {tl:"╔",tr:"╗",bl:"╚",br:"╝",hz:"═",vt:"║",jt:"╋"}
+];
+
+/* ---------- grid / clock ---------- */
+const CW=10,CH=16,TICK_MS=1000/60,FB=4;
+let cols=0,rows=0;
+const cv=document.getElementById("cv"),ctx=cv.getContext("2d");
+
+/* ---------- state ---------- */
+let HASH,tick=0,acc=0,lastT=0,paused=false;
+let HUE0=0,HARM="TRIAD",HOFF=120,ROT=0.5,CEIL=7;
+let formations=[],spawnCount=0;
+let jerkUntil=-1,jerkSeed=0;
+let remUntil=-1,remSeed=0,lucid=null,occ=null;
+let pointer={x:-99,y:-99};
+let hud={msg:"",until:0};
+let DENSITY="STANDARD",ARCH="FRAME STACK";
+
+function anchorNow(){return HUE0+tick/30*ROT;}
+
+function build(hash){
+  HASH=hash;
+  const R=makeR(hash);
+  SEEDN=R()*1000;
+  HUE0=R()*360;
+  ROT=(0.7+R()*1.4)*(R()<0.5?1:-1);
+  HARM=["COMPLEMENT","TRIAD","SPLIT","ANALOG"][Math.floor(R()*4)];
+  HOFF=HARM==="COMPLEMENT"?180:HARM==="TRIAD"?120:HARM==="SPLIT"?150:45;
+  CEIL=5+Math.floor(R()*5);
+  DENSITY=["SPARSE","STANDARD","DENSE"][Math.floor(R()*3)];
+  ARCH=["FRAME STACK","SLAB FIELD","RAIL VAULT","OFFSET WINDOWS","CROSSBAR NODE"][Math.floor(R()*5)];
+  formations=[];spawnCount=0;jerkUntil=-1;tick=0;
+  const n=DENSITY==="SPARSE"?3:DENSITY==="DENSE"?6:4;
+  for(let i=0;i<n;i++)spawnFormation(true,i===0?ARCH:null);
+  hud={msg:"HYPNIC · RECTILINEAR FIELD ACQUIRED · "+HARM,until:tick+130};
+}
+
+/* ---------- formation construction ---------- */
+function addCell(map,x,y,ch,accent=false,weight=1){
+  const key=x+","+y;
+  const old=map.get(key);
+  if(!old||weight>=old.weight)map.set(key,{x,y,ch,accent,weight,gate:h31(x*13+y*7,weight,317)});
+}
+function addRect(map,x,y,w,h,heavy=false,accent=false,weight=5){
+  const f=FRAMESETS[heavy?1:0];
+  addCell(map,x,y,f.tl,accent,weight+1);addCell(map,x+w-1,y,f.tr,accent,weight+1);
+  addCell(map,x,y+h-1,f.bl,accent,weight+1);addCell(map,x+w-1,y+h-1,f.br,accent,weight+1);
+  for(let i=1;i<w-1;i++){
+    addCell(map,x+i,y,f.hz,accent,weight);
+    addCell(map,x+i,y+h-1,f.hz,accent,weight);
+  }
+  for(let j=1;j<h-1;j++){
+    addCell(map,x,y+j,f.vt,accent,weight);
+    addCell(map,x+w-1,y+j,f.vt,accent,weight);
+  }
+}
+function addHLine(map,x,y,w,heavy=false,accent=false,weight=4){
+  const ch=heavy?"═":"─";
+  for(let i=0;i<w;i++)addCell(map,x+i,y,(i%11===0?"+":ch),accent,weight);
+}
+function addVLine(map,x,y,h,heavy=false,accent=false,weight=4){
+  const ch=heavy?"║":"│";
+  for(let j=0;j<h;j++)addCell(map,x,y+j,(j%7===0?"+":ch),accent,weight);
+}
+function addSlab(map,x,y,w,h,block="▓",accent=false,weight=3){
+  for(let j=0;j<h;j++)for(let i=0;i<w;i++){
+    const edge=i===0||j===0||i===w-1||j===h-1;
+    const ch=edge?(j===0||j===h-1?"═":"║"):block;
+    addCell(map,x+i,y+j,ch,accent&&((i+j)%5===0),weight+(edge?2:0));
+  }
+}
+function addHeader(map,x,y,w,heavy=false,accent=true){
+  if(w<8)return;
+  const hz=heavy?"═":"─";
+  addCell(map,x,y,"+",accent,8);addCell(map,x+w-1,y,"+",accent,8);
+  for(let i=1;i<w-1;i++)addCell(map,x+i,y,i%6===0?"+":hz,accent&&i%6===0,7);
+}
+
+function makeFrameStack(map,r,w,h){
+  const n=3+Math.floor(r()*6),stepX=1+Math.floor(r()*5),stepY=1+Math.floor(r()*3);
+  for(let i=0;i<n;i++){
+    const ww=Math.max(5,w-i*stepX),hh=Math.max(4,h-i*stepY);
+    if(ww<5||hh<4)break;
+    const ox=(i%2===0?-1:1)*Math.floor(i*(0.4+r()*0.8));
+    const oy=(i%2===0?1:-1)*Math.floor(i*(0.2+r()*0.5));
+    addRect(map,ox,oy,ww,hh,i%3===1,i===0,5+i);
+    if(i===0)addHeader(map,ox+1,oy+2,ww-2,true,true);
+  }
+}
+function makeSlabField(map,r,w,h){
+  const n=3+Math.floor(r()*6);
+  for(let i=0;i<n;i++){
+    const sw=Math.max(5,Math.floor(w*(0.28+r()*0.72)));
+    const sh=Math.max(2,Math.floor(h*(0.09+r()*0.28)));
+    const x=Math.floor((r()-0.18)*Math.max(1,w-sw+8));
+    const y=Math.floor((r()-0.10)*Math.max(1,h-sh+4));
+    if(r()<0.5)addSlab(map,x,y,sw,sh,GLYPHS.blocks[1+Math.floor(r()*3)],i%3===0,3+i);
+    else addRect(map,x,y,sw,sh,i%2===0,i%3===0,4+i);
+    if(r()<0.7)addHLine(map,x-Math.floor(r()*8),y+sh+Math.floor(r()*3),sw+Math.floor(r()*16),r()<0.45,false,3);
+  }
+}
+function makeRailVault(map,r,w,h){
+  const hN=4+Math.floor(r()*9),vN=2+Math.floor(r()*5);
+  for(let i=0;i<hN;i++){
+    const yy=Math.floor((i+0.5)*h/hN)+(i%2?1:-1)*Math.floor(r()*3);
+    const x=-Math.floor(r()*w*0.35),len=w+Math.floor(r()*w*0.7);
+    addHLine(map,x,yy,len,i%3===0,i%5===0,4+i%3);
+  }
+  for(let i=0;i<vN;i++){
+    const xx=Math.floor((i+0.5)*w/vN)+(i%2?1:-1)*Math.floor(r()*5);
+    addVLine(map,xx,-Math.floor(r()*h*0.25),h+Math.floor(r()*h*0.6),i%2===0,i===0,5);
+  }
+  addRect(map,Math.floor(w*0.16),Math.floor(h*0.18),Math.floor(w*0.68),Math.floor(h*0.62),true,true,7);
+}
+function makeOffsetWindows(map,r,w,h){
+  const n=4+Math.floor(r()*7);
+  let x=-Math.floor(r()*w*0.15),y=-Math.floor(r()*h*0.1);
+  for(let i=0;i<n;i++){
+    const ww=Math.max(7,Math.floor(w*(0.38+r()*0.5))),hh=Math.max(4,Math.floor(h*(0.16+r()*0.34)));
+    addRect(map,x,y,ww,hh,i%3===1,i%4===0,5+i%3);
+    if(i%2===0)addHeader(map,x+1,y+2,ww-2,i%3===1,true);
+    x+=2+Math.floor(r()*7);y+=1+Math.floor(r()*5);
+  }
+}
+function makeCrossbarNode(map,r,w,h){
+  const cx=Math.floor(w*(0.35+r()*0.3)),cy=Math.floor(h*(0.35+r()*0.3));
+  addHLine(map,-Math.floor(w*0.35),cy,Math.floor(w*1.7),true,true,8);
+  addVLine(map,cx,-Math.floor(h*0.35),Math.floor(h*1.7),true,true,8);
+  addRect(map,cx-Math.floor(w*0.28),cy-Math.floor(h*0.24),Math.max(8,Math.floor(w*0.56)),Math.max(6,Math.floor(h*0.48)),true,false,7);
+  const pads=3+Math.floor(r()*5);
+  for(let i=0;i<pads;i++){
+    const pw=4+Math.floor(r()*10),ph=2+Math.floor(r()*5);
+    const px=cx+Math.floor((r()-0.5)*w*0.95),py=cy+Math.floor((r()-0.5)*h*0.95);
+    addSlab(map,px,py,pw,ph,r()<0.5?"▓":"█",i%2===0,5);
+  }
+}
+
+function spawnFormation(initial,forcedKind=null){
+  const id=spawnCount++,r=makeR(HASH+":f"+id);
+  const kinds=["FRAME STACK","SLAB FIELD","RAIL VAULT","OFFSET WINDOWS","CROSSBAR NODE"];
+  const kind=forcedKind||kinds[Math.floor(r()*kinds.length)];
+  let w=Math.floor(cols*(0.18+r()*0.50));
+  let h=Math.floor(rows*(0.14+r()*0.40));
+  if(r()<0.28)w=Math.floor(cols*(0.72+r()*0.72));
+  if(r()<0.18)h=Math.floor(rows*(0.52+r()*0.48));
+  const x=Math.floor(cols*(-0.22+r()*1.12));
+  const y=Math.floor(CEIL+rows*(-0.14+r()*0.88));
+  const map=new Map();
+  if(kind==="FRAME STACK")makeFrameStack(map,r,w,h);
+  else if(kind==="SLAB FIELD")makeSlabField(map,r,w,h);
+  else if(kind==="RAIL VAULT")makeRailVault(map,r,w,h);
+  else if(kind==="OFFSET WINDOWS")makeOffsetWindows(map,r,w,h);
+  else makeCrossbarNode(map,r,w,h);
+  const cells=[...map.values()];
+  formations.push({
+    id,kind,x,y,w,h,cells,
+    born:initial?tick-Math.floor(r()*500):tick,
+    dur:1100+Math.floor(r()*1300),
+    hueOff:(r()-0.5)*54,
+    driftX:(r()-0.5)*0,
+    driftY:(r()-0.5)*0,
+    stepPeriod:45+Math.floor(r()*120),
+    stepAmp:1+Math.floor(r()*4),
+    seed:Math.floor(r()*1e6)
+  });
+}
+function formationEnv(f){
+  const p=(tick-f.born)/f.dur;
+  if(p>=1)return null;
+  const attack=smooth(Math.min(1,p/0.13));
+  const release=smooth(Math.min(1,(1-p)/0.20));
+  return{p,env:attack*release};
+}
+function formationGlyph(f,cell,near){
+  if(!near)return cell.ch;
+  const q=Math.floor(tick/2);
+  return GLYPHS.corrupt[Math.floor(h31(cell.x*17+cell.y*31,q,f.seed%991)*GLYPHS.corrupt.length)];
+}
+
+/* ---------- phenomena + jerk ---------- */
+const PHEN=["ROW TEAR","CHROMA SPLIT","STATIC BLEED","STALE ECHO","BLOCK SLIP"];
+function phenomAt(t){
+  const W=16,k=Math.floor(t/W);
+  if(h31(k,0,202)>0.7)return null;
+  return{type:PHEN[Math.floor(h31(k,0,201)*PHEN.length)%PHEN.length],env:Math.sin(Math.PI*(t/W-k)),k};
+}
+function jerkEnv(){return tick>jerkUntil?0:(jerkUntil-tick)/9;}
+function remActive(){return tick<=remUntil;}
+function remEnv(){return remActive()?Math.sin(Math.PI*(1-(remUntil-tick)/135)):0;}
+function scheduleJerks(){
+  /* REM spikes: ~every 80-110s the field surges into a dream burst */
+  if(!remActive()&&tick%30===0&&h31(Math.floor(tick/30),8,271)<0.011){
+    remUntil=tick+135;remSeed=tick;hud={msg:"REM SPIKE",until:tick+60};
+  }
+  const jerkProb=remActive()?0.11:0.036;      // spikes get jumpy
+  if(tick%30===0&&h31(Math.floor(tick/30),5,211)<jerkProb){
+    jerkUntil=tick+9;jerkSeed=tick;if(!remActive())hud={msg:"HYPNIC JERK",until:tick+40};
+  }
+  /* LUCID: rarely a structure resolves into readable data for ~2s */
+  if(!lucid&&tick%30===0&&h31(Math.floor(tick/30),9,277)<0.02&&formations.length){
+    const f=formations[Math.floor(h31(Math.floor(tick/30),10,281)*formations.length)];
+    lucid={id:f.id,until:tick+64,seed:Math.floor(h31(tick,11,283)*1e6)};
+    hud={msg:"LUCID",until:tick+64};
+  }
+  if(lucid&&tick>lucid.until)lucid=null;
+}
+/* readable payload for a lucid structure: hex coords / call sign */
+function lucidGlyph(cell,seed){
+  const line=((cell.y%3)+3)%3;
+  const seq=line===0?"NX-4E7A-":line===1?"0123456789ABCDEF":"·GRID·LOCK·";
+  return seq[((cell.x)%seq.length+seq.length)%seq.length];
+}
+
+/* ---------- input ---------- */
+cv.addEventListener("pointermove",e=>{pointer={x:e.clientX/CW,y:e.clientY/CH};});
+cv.addEventListener("pointerdown",()=>{jerkUntil=tick+9;jerkSeed=tick+1;hud={msg:"HYPNIC JERK",until:tick+40};});
+cv.addEventListener("pointerleave",()=>{pointer={x:-99,y:-99};});
+addEventListener("keydown",e=>{
+  if(e.key==="r"||e.key==="R")build(newHash());
+  else if(e.key===" "){e.preventDefault();paused=!paused;}
+  else if(e.key==="s"||e.key==="S"){
+    const a=document.createElement("a");a.download="hypnic_rect_"+HASH.slice(0,8)+".png";
+    a.href=cv.toDataURL("image/png");a.click();
+  }
+});
+
+/* ---------- sizing ---------- */
+function resize(){
+  const dpr=Math.min(2,devicePixelRatio||1);
+  cols=Math.max(36,Math.ceil(innerWidth/CW));rows=Math.max(24,Math.ceil(innerHeight/CH));
+  cv.width=innerWidth*dpr;cv.height=innerHeight*dpr;
+  cv.style.width=innerWidth+"px";cv.style.height=innerHeight+"px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.textBaseline="top";
+  if(HASH)build(HASH);
+}
+addEventListener("resize",resize);
+
+/* ---------- tick ---------- */
+function hypnicTick(){
+  if(!paused){
+    scheduleJerks();
+    formations=formations.filter(f=>formationEnv(f)!==null);
+    const target=DENSITY==="SPARSE"?3:DENSITY==="DENSE"?6:4;
+    while(formations.length<target)spawnFormation(false,null);
+  }
+  /* occupancy: where do standing structures overlap? (drift is off, so this is stable) */
+  occ=new Map();
+  for(const f of formations){
+    const e=formationEnv(f);if(!e)continue;
+    for(const cell of f.cells){
+      if(cell.gate>e.env)continue;
+      const key=(f.x+cell.x)+"|"+(f.y+cell.y);
+      occ.set(key,(occ.get(key)||0)+1);
+    }
+  }
+  tick++;
+}
+
+/* ---------- render ---------- */
+function render(){
+  const t=tick/30,p=phenomAt(t);
+  const tear=p&&p.type==="ROW TEAR"?p.env:0;
+  const chroma=p&&p.type==="CHROMA SPLIT"?p.env:0;
+  const bleed=p&&p.type==="STATIC BLEED"?p.env:0;
+  const echo=p&&p.type==="STALE ECHO"?p.env:0;
+  const rem=remEnv();
+  let slip=p&&p.type==="BLOCK SLIP"?p.env:0;
+  /* during REM a second phenomenon layers in */
+  if(rem>0.2){const p2=phenomAt(t+7.3);if(p2){
+    if(p2.type==="BLOCK SLIP")slip=Math.max(slip,p2.env*rem);
+  }}
+  const J=jerkEnv(),anchor=anchorNow()+rem*22;   // REM surges the spectrum
+
+  ctx.fillStyle="#030307";ctx.fillRect(0,0,innerWidth,innerHeight);
+
+  /* tinted scan bed */
+  const bed=hsl(anchor,0.72,0.50);
+  for(let br=0;br<rows;br+=FB){
+    const k=0.022+vn(br*0.2,t*0.15,229)*0.018;
+    ctx.fillStyle="rgb("+Math.floor(bed[0]*k)+","+Math.floor(bed[1]*k)+","+Math.floor(bed[2]*k)+")";
+    ctx.fillRect(0,br*CH,innerWidth,FB*CH+1);
+  }
+
+  ctx.font="13px 'SF Mono',Menlo,Consolas,monospace";
+  const rowOff=y=>{
+    let o=(vn(y*0.30,t*0.40,233)-0.5)*0.8;
+    if(tear)o+=(h31(Math.floor(y/3),Math.floor(t*2),239)-0.5)*9*tear;
+    if(slip)o+=(Math.floor(y/3)%2===0?1:-1)*5*slip;
+    if(J>0)o+=(h31(Math.floor(y/2),jerkSeed,241)-0.5)*28*J;
+    return Math.round(o);
+  };
+
+  /* rectilinear ceiling: rails, blocks, and junctions only */
+  const ceilRows=CEIL+Math.floor(bleed*5);
+  for(let y=0;y<ceilRows;y++){
+    const ro=rowOff(y),fade=y<CEIL?1:1-(y-CEIL)/5;
+    const weight=0.55+0.45*(y/Math.max(1,ceilRows));      // heavier toward the lip
+    const dataRun=h31(y,3,291)<0.16;                       // some rows are hex ledgers
+    for(let x=-4;x<cols+4;x++){
+      const n=h31(x,y,Math.floor(tick/4));
+      let ch;
+      if(dataRun)ch="0123456789ABCDEF·:".charAt(Math.floor(h31(x,y,Math.floor(tick/5))*18));
+      else ch=n<0.15?"█":n<0.30?"▓":n<0.48?"▒":n<0.67?"═":n<0.82?"─":"+";
+      const accent=h31(x,y,251)<0.06;
+      const col=accent?hsl(anchor+HOFF+h31(x,y,257)*35,0.92,0.63)
+                      :hsl(anchor-24,0.20,(0.24+n*0.28)*fade*weight);
+      ctx.fillStyle="rgba("+col[0]+","+col[1]+","+col[2]+","+clamp(fade*weight,0,1).toFixed(3)+")";
+      ctx.fillText(ch,(x+ro)*CW,y*CH);
+    }
+  }
+
+  /* formations */
+  for(const f of formations){
+    const e=formationEnv(f);if(!e)continue;
+    const step=Math.floor(tick/f.stepPeriod),stepShift=(step%2===0?-1:1)*f.stepAmp;
+    const baseX=f.x+f.driftX*(tick-f.born)+(slip>0?stepShift*slip:0);
+    const baseY=f.y+f.driftY*(tick-f.born);
+    const hue=anchor+f.hueOff;
+    const baseCol=hsl(hue,0.78,0.58),accCol=hsl(hue+HOFF,0.94,0.64);
+
+    for(const cell of f.cells){
+      const gate=cell.gate;
+      if(gate>e.env)continue;
+      const gx=baseX+cell.x,gy=baseY+cell.y;
+      if(gy<-6||gy>rows+6)continue;
+      const near=Math.abs(pointer.x-gx)<4&&Math.abs(pointer.y-gy)<3;
+      let ch=formationGlyph(f,cell,near);
+      const decay=smooth(clamp((e.p-0.72)/0.28,0,1));
+      if(decay>0&&h31(cell.x,cell.y,Math.floor(tick/5)+f.seed)<decay*0.24){
+        ch=GLYPHS.corrupt[Math.floor(h31(cell.x*3,cell.y*5,tick+f.seed)*GLYPHS.corrupt.length)];
+      }
+      const isLucid=lucid&&lucid.id===f.id;
+      if(isLucid)ch=lucidGlyph(cell,lucid.seed);
+      const interlocked=occ&&occ.get((f.x+cell.x)+"|"+(f.y+cell.y))>1;
+      if(interlocked&&!isLucid)ch="╬";
+      const ro=rowOff(gy)+(J>0?Math.round((h31(cell.y,jerkSeed,263)-0.5)*11*J):0);
+      const x=(gx+ro)*CW,y=gy*CH;
+      const interlocked2=occ&&occ.get((f.x+cell.x)+"|"+(f.y+cell.y))>1;
+      const isLucid2=lucid&&lucid.id===f.id;
+      let col=cell.accent?accCol:baseCol;
+      if(interlocked2)col=hsl(hue+HOFF,0.98,0.68);
+      if(isLucid2)col=hsl(hue+HOFF,0.30,0.86);
+      const alpha=clamp((0.36+0.64*e.env)*(0.78+0.22*cell.weight/9)*(isLucid2?1.15:1),0,1);
+
+      if(chroma>0.12){
+        ctx.fillStyle="rgba("+col[0]+",0,0,"+(0.40*chroma*alpha).toFixed(3)+")";
+        ctx.fillText(ch,x-1-chroma*2.0,y);
+        ctx.fillStyle="rgba(0,"+col[1]+","+col[2]+","+(0.40*chroma*alpha).toFixed(3)+")";
+        ctx.fillText(ch,x+1+chroma*2.0,y);
+      }
+      if(echo>0.12){
+        ctx.fillStyle="rgba("+col[0]+","+col[1]+","+col[2]+","+(0.18*echo*alpha).toFixed(3)+")";
+        ctx.fillText(ch,x+CW*(0.5+echo),y+CH*0.35);
+      }
+      ctx.fillStyle="rgba("+col[0]+","+col[1]+","+col[2]+","+alpha.toFixed(3)+")";
+      ctx.fillText(ch,x,y);
+    }
+  }
+
+  if(J>0.4){
+    ctx.fillStyle="rgba(235,240,255,"+((J-0.4)*0.12).toFixed(3)+")";
+    ctx.fillRect(0,0,innerWidth,innerHeight);
+  }
+
+  ctx.font="10px monospace";
+  ctx.fillStyle="rgba(160,166,178,0.56)";
+  const stw=paused?"HELD":lucid?"LUCID":remActive()?"REM SPIKE":J>0?"JERK":tear?"TEARING":slip>0.2?"SLIPPING":"DREAMING";
+  const state="HYPNIC · STRUCTURES "+formations.length+" · "+ARCH+" · "+DENSITY+" · H"+
+    String(Math.floor(((anchor%360)+360)%360)).padStart(3,"0")+"·"+HARM+" · "+stw+" · #"+HASH.slice(0,8);
+  ctx.fillText(state,10,innerHeight-16);
+  if(hud.until>tick){
+    const hc=hsl(anchor+HOFF,0.92,0.65);ctx.fillStyle="rgb("+hc[0]+","+hc[1]+","+hc[2]+")";
+    ctx.fillText(hud.msg,innerWidth-10-ctx.measureText(hud.msg).width,innerHeight-16);
+  }
+}
+
+/* ---------- fixed-clock loop ---------- */
+function loop(ts){
+  requestAnimationFrame(loop);
+  if(!lastT)lastT=ts;
+  acc+=ts-lastT;lastT=ts;
+  let steps=0;
+  while(acc>=TICK_MS&&steps<4){hypnicTick();acc-=TICK_MS;steps++;}
+  if(acc>200)acc=0;
+  if(steps>0)render();
+}
+
+/* ---------- boot ---------- */
+resize();
+build(location.hash?decodeURIComponent(location.hash.slice(1)):newHash());
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
