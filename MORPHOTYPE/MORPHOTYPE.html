@@ -1,0 +1,1164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MORPHOTYPE — Screensaver</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <style>
+        /* Anthropic Brand Colors */
+        :root {
+            --anthropic-dark: #141413;
+            --anthropic-light: #faf9f5;
+            --anthropic-mid-gray: #b0aea5;
+            --anthropic-light-gray: #e8e6dc;
+            --anthropic-orange: #d97757;
+            --anthropic-blue: #6a9bcc;
+            --anthropic-green: #788c5d;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: #000;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            color: #b0aea5;
+        }
+
+        .container { display: flex; height: 100vh; width: 100vw; padding: 0; gap: 0; }
+
+        .sidebar {
+            width: 320px;
+            flex-shrink: 0;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(20, 20, 19, 0.1);
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        .sidebar h1 {
+            font-family: 'Lora', serif;
+            font-size: 24px;
+            font-weight: 500;
+            color: var(--anthropic-dark);
+            margin-bottom: 8px;
+        }
+
+        .sidebar .subtitle {
+            color: var(--anthropic-mid-gray);
+            font-size: 14px;
+            margin-bottom: 32px;
+            line-height: 1.4;
+        }
+
+        .control-section { margin-bottom: 32px; }
+
+        .control-section h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--anthropic-dark);
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-section h3::before {
+            content: '•';
+            color: var(--anthropic-orange);
+            font-weight: bold;
+        }
+
+        .seed-input {
+            width: 100%;
+            background: var(--anthropic-light);
+            padding: 12px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            margin-bottom: 12px;
+            border: 1px solid var(--anthropic-light-gray);
+            text-align: center;
+        }
+
+        .seed-input:focus {
+            outline: none;
+            border-color: var(--anthropic-orange);
+            box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.1);
+            background: white;
+        }
+
+        .seed-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .regen-button { margin-bottom: 0; }
+
+        .control-group { margin-bottom: 20px; }
+
+        .control-group label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--anthropic-dark);
+            margin-bottom: 8px;
+        }
+
+        .slider-container { display: flex; align-items: center; gap: 12px; }
+
+        .slider-container input[type="range"] {
+            flex: 1;
+            height: 4px;
+            background: var(--anthropic-light-gray);
+            border-radius: 2px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .slider-container input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px; height: 16px;
+            background: var(--anthropic-orange);
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .slider-container input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.1);
+            background: #c86641;
+        }
+
+        .slider-container input[type="range"]::-moz-range-thumb {
+            width: 16px; height: 16px;
+            background: var(--anthropic-orange);
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+        }
+
+        .value-display {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: var(--anthropic-mid-gray);
+            min-width: 60px;
+            text-align: right;
+        }
+
+        .color-group { margin-bottom: 16px; }
+
+        .color-group label {
+            display: block;
+            font-size: 12px;
+            color: var(--anthropic-mid-gray);
+            margin-bottom: 4px;
+        }
+
+        .color-picker-container { display: flex; align-items: center; gap: 8px; }
+
+        .color-picker-container input[type="color"] {
+            width: 32px; height: 32px;
+            border: none; border-radius: 6px;
+            cursor: pointer; background: none; padding: 0;
+        }
+
+        .color-value {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: var(--anthropic-mid-gray);
+        }
+
+        .button {
+            background: var(--anthropic-orange);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            width: 100%;
+        }
+
+        .button:hover { background: #c86641; transform: translateY(-1px); }
+        .button:active { transform: translateY(0); }
+        .button.secondary { background: var(--anthropic-blue); }
+        .button.secondary:hover { background: #5a8bb8; }
+        .button.tertiary { background: var(--anthropic-green); }
+        .button.tertiary:hover { background: #6b7b52; }
+
+        .button-row { display: flex; gap: 8px; margin-bottom: 8px; }
+        .button-row .button { flex: 1; }
+
+        .readout {
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            color: var(--anthropic-mid-gray);
+            background: var(--anthropic-light);
+            border: 1px solid var(--anthropic-light-gray);
+            border-radius: 8px;
+            padding: 12px;
+            line-height: 1.7;
+        }
+        .readout b { color: var(--anthropic-orange); }
+
+        html, body { background: #000; cursor: none; }
+
+        .canvas-area {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+        }
+
+        #canvas-container {
+            background: #000;
+        }
+
+        /* Letterboxed to the plate's own 1400x900 design aspect on any
+           display the wrapper hands us — never cropped, never stretched. */
+        #canvas-container canvas {
+            display: block;
+            width: min(100vw, calc(100vh * 1400 / 900)) !important;
+            height: auto !important;
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            letter-spacing: 2px;
+            color: #6a6a63;
+        }
+
+
+        @media (max-width: 600px) {
+            .container { flex-direction: column; }
+            .sidebar { width: 100%; }
+            .canvas-area { padding: 20px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Control Sidebar -->
+        <!-- Main Canvas Area -->
+        <div class="canvas-area" id="stage">
+            <div id="canvas-container">
+                <div class="loading">Initializing generative art...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ═══════════════════════════════════════════════════════════════════════
+        // MORPHOTYPE — SCREENSAVER BUILD
+        // No UI: parameters are the fixed defaults from the customizable
+        // draft. Edit the values below directly to change them permanently.
+        // An optional ?seed=NNNN on the file's URL (set in the screensaver
+        // wrapper's own configuration) overrides the starting seed only —
+        // useful for giving different machines a different opening tour
+        // without touching this file.
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function urlSeedOverride() {
+            try {
+                const v = parseInt(new URLSearchParams(location.search).get('seed'), 10);
+                return Number.isFinite(v) && v > 0 ? v : null;
+            } catch (e) { return null; }
+        }
+
+        let params = {
+            seed: urlSeedOverride() || 12345,
+            population: 16,
+            cycles: 16,
+            lattice: 45,
+            symmetry: 0,          // 0 = decided by seed, 1 = bilateral, 2 = quad, 3 = radial
+            annotation: 1.0,
+            anomalyThreshold: 0.62,
+            seedMass: 4,
+            heroDwell: 10,
+            surveyDwell: 70,
+            colorPalette: ['#ff0040', '#00ff11', '#391fff']
+        };
+
+        let defaultParams = JSON.parse(JSON.stringify(params));
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // AUTOMATON RULES — curated: every one of these produces structure
+        // ═══════════════════════════════════════════════════════════════════════
+
+        const RULES = [
+            { name: 'REPLICANT',  B: [1,3,5,7],     S: [1,3,5,7]      },
+            { name: 'VITAL',      B: [3],           S: [2,3]          },
+            { name: 'HIGHVITAL',  B: [3,6],         S: [2,3]          },
+            { name: 'DIURNAL',    B: [3,6,7,8],     S: [3,4,6,7,8]    },
+            { name: 'AMOEBIC',    B: [3,5,6,7,8],   S: [5,6,7,8]      },
+            { name: 'CORAL',      B: [3],           S: [4,5,6,7,8]    },
+            { name: 'MAZE',       B: [3],           S: [1,2,3,4,5]    },
+            { name: 'GNARL',      B: [1],           S: [1]            }
+        ];
+        const SYM_NAMES = ['—', 'BILATERAL', 'QUADRILATERAL', 'RADIAL-8'];
+        const BIOMES = ['ABYSSAL','LITTORAL','THERMAL','CRYOGENIC','ANOXIC','PELAGIC','SILICATE'];
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // STATE
+        // ═══════════════════════════════════════════════════════════════════════
+
+        let rng = null;
+        let specimens = [];
+        let heroIndex = 0;
+        let rule = RULES[0];
+        let symOrder = 1;
+        let survey = {};
+        let tick = 0;
+        let C = {};                 // resolved colors
+        let ambient = true;   // kiosk build: always ambient, no toggle UI
+        let ambientTick = 0;
+        let revealN = 1e9;          // progressive catalog reveal during a resurvey
+        let resurveyFlash = 0;
+        const FPS = 60;
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // SEEDED GENERATOR
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function makeRng(s) {
+            let a = (s >>> 0) || 1;
+            return function () {
+                a += 0x6D2B79F5;
+                let t = a;
+                t = Math.imul(t ^ (t >>> 15), t | 1);
+                t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            };
+        }
+        const pickOf = (arr, r) => arr[Math.floor(r() * arr.length) % arr.length];
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // SETUP
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function setup() {
+            const c = createCanvas(1400, 900);
+            c.parent('canvas-container');
+            const l = document.querySelector('.loading');
+            if (l) l.style.display = 'none';
+            pixelDensity(2);
+            initializeSystem();
+        }
+
+        function initializeSystem() {
+            randomSeed(params.seed);
+            noiseSeed(params.seed);
+            rng = makeRng(Math.imul(params.seed, 2654435761) >>> 0);
+
+            resolveColors();
+
+            symOrder = Number(params.symmetry) > 0
+                ? Number(params.symmetry)
+                : 1 + Math.floor(rng() * 3);
+
+            // Some rules cannot sustain a culture at a given lattice/cycle
+            // setting no matter how it is inoculated. Walk the rule list until
+            // the plate is populated, so no seed yields an empty catalog.
+            const n = Number(params.population);
+            const startRule = Math.floor(rng() * RULES.length);
+            const R0 = Number(params.lattice) | 1;
+            let chosen = null;
+            for (let attempt = 0; attempt < RULES.length; attempt++) {
+                rule = RULES[(startRule + attempt) % RULES.length];
+                const trial = [];
+                for (let i = 0; i < n; i++) trial.push(growSpecimen(i));
+                const live = trial.filter(s => viable(s.m, R0)).length;
+                if (!chosen || live > chosen.live) chosen = { rule, trial, live };
+                if (live >= Math.ceil(n * 0.5)) break;
+            }
+            rule = chosen.rule;
+            specimens = chosen.trial;
+
+            // Population statistics — real aggregates over real measurements.
+            const masses = specimens.map(s => s.m.mass);
+            const comps = specimens.map(s => s.m.compactness);
+            survey = {
+                code: 'MX-' + String(params.seed % 10000).padStart(4, '0'),
+                biome: pickOf(BIOMES, rng),
+                massMin: Math.min(...masses),
+                massMax: Math.max(...masses),
+                massMean: masses.reduce((a, b) => a + b, 0) / masses.length,
+                compMean: comps.reduce((a, b) => a + b, 0) / comps.length,
+                anomalies: specimens.filter(s => s.anomaly).length
+            };
+
+            heroIndex = specimens.findIndex(s => s.anomaly);
+            if (heroIndex < 0) heroIndex = Math.floor(rng() * specimens.length);
+
+            tick = 0;
+            revealN = ambient ? 0 : 1e9;
+            updateAssay();
+        }
+
+        function resolveColors() {
+            C.spec = color(params.colorPalette[0]);
+            C.inst = color(params.colorPalette[1]);
+            C.anom = color(params.colorPalette[2]);
+            C.white = color(255);
+            C.gray = color(128);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // GROWTH — symmetric cellular automaton
+        // ═══════════════════════════════════════════════════════════════════════
+
+        // A culture is viable if it neither died out nor consumed the dish.
+        // Roughly a third of rule/inoculation pairings do one or the other, so
+        // each specimen is re-cultured under adjusted conditions until it
+        // yields a readable organism. Without this the plate fills with blanks.
+        function viable(m, R) {
+            return m.mass >= 6 && m.mass <= R * R * 0.78;
+        }
+
+        function growSpecimen(index) {
+            const R = Number(params.lattice) | 1;
+            let best = null;
+            for (let attempt = 0; attempt < 10; attempt++) {
+                const c = culture(index, attempt, R);
+                if (viable(c.m, R)) return finish(c, index, R);
+                // Keep the closest near-miss in case every attempt fails.
+                if (!best || Math.abs(c.m.mass - R * 4) < Math.abs(best.m.mass - R * 4)) best = c;
+            }
+            return finish(best, index, R);
+        }
+
+        function finish(c, index, R) {
+            const local = makeRng(Math.imul(params.seed + index * 104729, 40503) >>> 0);
+            const anomaly = c.m.normCompact > Number(params.anomalyThreshold);
+            return {
+                index, R, cell: c.cell, m: c.m, anomaly,
+                id: String.fromCharCode(65 + (index % 26)) + 'X-' +
+                    String(2000 + Math.floor(local() * 1999)),
+                seq: sequenceOf(c.cell, R),
+                type: c.m.mass === 0 ? 'NULL'
+                    : c.m.lobes > 5 ? 'RAMIFIED'
+                    : c.m.density > 0.5 ? 'MASSIVE' : 'SPARSE'
+            };
+        }
+
+        function culture(index, attempt, R) {
+            // Each attempt adjusts the two variables that decide the outcome:
+            // inoculation mass (escapes extinction) and cycle count (escapes
+            // overgrowth). Deterministic in seed, index and attempt.
+            const local = makeRng(Math.imul(params.seed + index * 7919 + attempt * 33391, 2246822519) >>> 0);
+            const gens = Math.max(3, Math.round(Number(params.cycles) * (1 - attempt * 0.07)));
+            const inoc = Number(params.seedMass) + attempt * 2;
+            const spread = 0.22 + attempt * 0.04;
+
+            let cell = new Uint8Array(R * R);
+            const mid = (R - 1) / 2;
+            for (let k = 0; k < inoc; k++) {
+                const x = Math.floor(mid + (local() - 0.5) * R * spread);
+                const y = Math.floor(mid + (local() - 0.5) * R * spread);
+                if (x >= 0 && y >= 0 && x < R && y < R) cell[x + y * R] = 1;
+            }
+            applySymmetry(cell, R, symOrder);
+
+            const Bset = new Set(rule.B), Sset = new Set(rule.S);
+            for (let g = 0; g < gens; g++) {
+                const next = new Uint8Array(R * R);
+                for (let y = 0; y < R; y++) {
+                    for (let x = 0; x < R; x++) {
+                        let n = 0;
+                        for (let dy = -1; dy <= 1; dy++) {
+                            for (let dx = -1; dx <= 1; dx++) {
+                                if (!dx && !dy) continue;
+                                const nx = x + dx, ny = y + dy;
+                                if (nx < 0 || ny < 0 || nx >= R || ny >= R) continue;
+                                n += cell[nx + ny * R];
+                            }
+                        }
+                        const alive = cell[x + y * R] === 1;
+                        next[x + y * R] = (alive ? Sset.has(n) : Bset.has(n)) ? 1 : 0;
+                    }
+                }
+                cell = next;
+                applySymmetry(cell, R, symOrder);
+            }
+            return { cell, m: measure(cell, R) };
+        }
+
+        function applySymmetry(cell, R, order) {
+            const last = R - 1;
+            for (let y = 0; y < R; y++) {
+                for (let x = 0; x < R; x++) {
+                    const v = cell[x + y * R];
+                    if (!v) continue;
+                    cell[(last - x) + y * R] = 1;                       // mirror X
+                    if (order >= 2) {
+                        cell[x + (last - y) * R] = 1;                   // mirror Y
+                        cell[(last - x) + (last - y) * R] = 1;
+                    }
+                    if (order >= 3) {                                    // diagonal → 8-fold
+                        cell[y + x * R] = 1;
+                        cell[(last - y) + x * R] = 1;
+                        cell[y + (last - x) * R] = 1;
+                        cell[(last - y) + (last - x) * R] = 1;
+                    }
+                }
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // MEASUREMENT — the annotations are these numbers, not decoration
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function measure(cell, R) {
+            let mass = 0, minX = R, maxX = -1, minY = R, maxY = -1, perim = 0;
+            let sx = 0, sy = 0;
+            for (let y = 0; y < R; y++) {
+                for (let x = 0; x < R; x++) {
+                    if (!cell[x + y * R]) continue;
+                    mass++; sx += x; sy += y;
+                    if (x < minX) minX = x; if (x > maxX) maxX = x;
+                    if (y < minY) minY = y; if (y > maxY) maxY = y;
+                    // perimeter: a live cell touching dead space or the edge
+                    let exposed = false;
+                    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+                        const nx = x + dx, ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= R || ny >= R || !cell[nx + ny * R]) { exposed = true; break; }
+                    }
+                    if (exposed) perim++;
+                }
+            }
+            if (mass === 0) {
+                return { mass: 0, bw: 0, bh: 0, minX: 0, minY: 0, maxX: 0, maxY: 0,
+                         cx: R / 2, cy: R / 2, perim: 0, density: 0, compactness: 0,
+                         normCompact: 0, lobes: 0, extremities: [], radius: 0 };
+            }
+            const bw = maxX - minX + 1, bh = maxY - minY + 1;
+            const cx = sx / mass, cy = sy / mass;
+            const density = mass / (bw * bh);
+            const compactness = (perim * perim) / (4 * Math.PI * mass);
+
+            // Connected components (4-neighbour flood) → "lobes"
+            const seen = new Uint8Array(R * R);
+            let lobes = 0;
+            const stack = [];
+            for (let i = 0; i < R * R; i++) {
+                if (!cell[i] || seen[i]) continue;
+                lobes++; stack.length = 0; stack.push(i); seen[i] = 1;
+                while (stack.length) {
+                    const p = stack.pop();
+                    const px = p % R, py = (p / R) | 0;
+                    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+                        const nx = px + dx, ny = py + dy;
+                        if (nx < 0 || ny < 0 || nx >= R || ny >= R) continue;
+                        const q = nx + ny * R;
+                        if (cell[q] && !seen[q]) { seen[q] = 1; stack.push(q); }
+                    }
+                }
+            }
+
+            // Extremities: farthest live cell from centroid in 8 sectors. These
+            // are what the leader lines actually point at.
+            const ext = new Array(8).fill(null);
+            let radius = 0;
+            for (let y = 0; y < R; y++) {
+                for (let x = 0; x < R; x++) {
+                    if (!cell[x + y * R]) continue;
+                    const dx = x - cx, dy = y - cy;
+                    const d = Math.sqrt(dx * dx + dy * dy);
+                    if (d > radius) radius = d;
+                    let a = Math.atan2(dy, dx);
+                    if (a < 0) a += Math.PI * 2;
+                    const sec = Math.min(7, Math.floor(a / (Math.PI * 2) * 8));
+                    if (!ext[sec] || d > ext[sec].d) ext[sec] = { x, y, d, sec };
+                }
+            }
+
+            return {
+                mass, bw, bh, minX, minY, maxX, maxY, cx, cy, perim, density,
+                compactness,
+                normCompact: Math.min(1, compactness / 6),
+                lobes,
+                extremities: ext.filter(Boolean),
+                radius
+            };
+        }
+
+        // A real sequence string, derived from the specimen's own bit pattern.
+        function sequenceOf(cell, R) {
+            const A = 'ATGC';
+            let out = '';
+            for (let k = 0; k < 9; k++) {
+                let acc = 0;
+                for (let b = 0; b < 8; b++) {
+                    const i = (k * 61 + b * 173) % (R * R);
+                    acc = (acc << 1) | cell[i];
+                }
+                out += A[acc & 3] + A[(acc >> 2) & 3] + A[(acc >> 4) & 3];
+                if (k % 3 === 2 && k < 8) out += '-';
+            }
+            return out;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // DRAWING PRIMITIVES — the instrument's vocabulary
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function bracket(x, y, w, h, len, col, weight) {
+            stroke(col); strokeWeight(weight || 1.5); noFill();
+            line(x, y, x + len, y);           line(x, y, x, y + len);
+            line(x + w, y, x + w - len, y);   line(x + w, y, x + w, y + len);
+            line(x, y + h, x + len, y + h);   line(x, y + h, x, y + h - len);
+            line(x + w, y + h, x + w - len, y + h); line(x + w, y + h, x + w, y + h - len);
+            noStroke();
+        }
+
+        function regMark(x, y, s, col) {
+            stroke(col); strokeWeight(1);
+            line(x - s, y, x + s, y);
+            line(x, y - s, x, y + s);
+            noStroke();
+        }
+
+        function tinyText(str, x, y, col, size) {
+            fill(col); noStroke();
+            textFont('monospace');
+            textSize(size || 9);
+            textAlign(LEFT, TOP);
+            text(str, x, y);
+        }
+
+        function drawSpecimen(sp, x, y, w, h, col, showGrid) {
+            const R = sp.R;
+            const cw = w / R, ch = h / R;
+            noStroke();
+            fill(col);
+            for (let gy = 0; gy < R; gy++) {
+                for (let gx = 0; gx < R; gx++) {
+                    if (!sp.cell[gx + gy * R]) continue;
+                    rect(x + gx * cw, y + gy * ch, cw + 0.4, ch + 0.4);
+                }
+            }
+            if (showGrid) {
+                stroke(255, 22); strokeWeight(0.5);
+                for (let g = 0; g <= R; g += 6) {
+                    line(x + g * cw, y, x + g * cw, y + h);
+                    line(x, y + g * ch, x + w, y + g * ch);
+                }
+                noStroke();
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // PLATE COMPOSITION
+        // ═══════════════════════════════════════════════════════════════════════
+
+        // Two timescales keep the plate alive: the hero walks the catalog every
+        // few seconds, and the whole survey is replaced on a slower cycle. The
+        // seed sequence is a deterministic LCG walk, so an ambient run is
+        // reproducible end to end from its starting seed.
+        function nextSurveySeed(s) {
+            return ((Math.imul(s, 1664525) + 1013904223) >>> 0) % 900000 + 1;
+        }
+
+        function updateAmbient() {
+            if (!ambient) return;
+            ambientTick++;
+
+            if (revealN < specimens.length && ambientTick % 4 === 0) revealN++;
+
+            const heroEvery = Math.max(60, Number(params.heroDwell) * FPS);
+            const surveyEvery = Math.max(300, Number(params.surveyDwell) * FPS);
+
+            if (ambientTick % surveyEvery === 0) {
+                params.seed = nextSurveySeed(params.seed);
+                updateSeedDisplay();
+                initializeSystem();
+                resurveyFlash = 45;
+                return;
+            }
+            if (ambientTick % heroEvery === 0 && revealN >= specimens.length) {
+                cycleHero();
+            }
+        }
+
+        function draw() {
+            tick++;
+            updateAmbient();
+            if (resurveyFlash > 0) resurveyFlash--;
+            background(0);
+
+            const blink = (tick % 60) < 38;
+
+            drawHeaderStrip();
+            drawCatalog(20, 82, 470, 700);
+            drawHero(512, 82, 500, 700);
+            drawAnalysis(1034, 82, 346, 700);
+            drawFooterStrip(blink);
+
+            if (ambient) {
+                // A slow scan pass across the plate: motion at a glance from
+                // across a room, without disturbing the composition.
+                // Phase-locked to the hero cycle: the scan leaves the top the
+                // instant a specimen is promoted and reaches the bottom exactly
+                // as it is replaced — one complete pass per hero, at any dwell.
+                // (Driving it from `tick` instead would free-run and drift,
+                // since `tick` and `ambientTick` have different origins.)
+                const heroEvery2 = Math.max(60, Number(params.heroDwell) * FPS);
+                const scanPhase = (ambientTick % heroEvery2) / heroEvery2;
+                const sy2 = 82 + scanPhase * 700;
+                stroke(C.inst, 40); strokeWeight(1);
+                line(20, sy2, 1380, sy2);
+                noStroke();
+                // Leading edge brightens as it crosses, so the pass reads as a
+                // sweep over the specimen rather than a drifting rule.
+                stroke(C.inst, 110); strokeWeight(1);
+                line(512, sy2, 1012, sy2);
+                noStroke();
+
+                const surveyEvery = Math.max(300, Number(params.surveyDwell) * FPS);
+                const prog = (ambientTick % surveyEvery) / surveyEvery;
+                fill(C.inst); rect(20, 74, 1360 * prog, 2);
+
+                fill(C.inst); rect(1210, 18, 76, 14);
+                tinyText('AMBIENT', 1216, 20, color(0), 9);
+            }
+            if (resurveyFlash > 0) {
+                const a = resurveyFlash / 45;
+                fill(C.white, 200 * a);
+                textFont('monospace'); textSize(28); textAlign(LEFT, TOP);
+                text('RESURVEY', 512, 420);
+                noStroke();
+                fill(C.inst, 120 * a); rect(512, 456, 220 * a, 3);
+            }
+        }
+
+        function drawHeaderStrip() {
+            const y = 22;
+            tinyText('MORPHOTYPE', 20, y - 6, C.white, 22);
+            tinyText('CLASSIFICATION PLATE', 205, y - 2, C.inst, 10);
+            tinyText('/', 200, y - 2, C.gray, 10);
+
+            const cols = [
+                ['SURVEY', survey.code],
+                ['RULE', `B${rule.B.join('')}/S${rule.S.join('')}`],
+                ['MORPH', rule.name],
+                ['SYMMETRY', SYM_NAMES[symOrder]],
+                ['BIOME', survey.biome],
+                ['POP', String(specimens.length).padStart(2, '0')]
+            ];
+            let cx = 470;
+            for (const [k, v] of cols) {
+                tinyText(k, cx, y - 8, C.gray, 8);
+                tinyText(v, cx, y + 3, C.white, 10);
+                cx += 155;
+            }
+            stroke(C.inst); strokeWeight(1);
+            line(20, 68, 1380, 68);
+            noStroke();
+            fill(C.inst); rect(20, 64, 120, 4);
+            if (survey.anomalies > 0) {
+                fill(C.anom); rect(1300, 60, 80, 12);
+                tinyText(`${survey.anomalies} ANOM`, 1306, 62, C.white, 9);
+            }
+        }
+
+        function drawCatalog(x, y, w, h) {
+            tinyText('CATALOG', x, y - 14, C.white, 12);
+            tinyText('SPECIMEN FIELD / FULL POPULATION', x + 78, y - 10, C.gray, 8);
+
+            const per = 4;
+            const cellW = w / per;
+            const rowsN = Math.ceil(specimens.length / per);
+            const cellH = Math.min(cellW * 1.18, h / Math.max(1, rowsN));
+
+            for (let i = 0; i < specimens.length; i++) {
+                if (i >= revealN) {
+                    // Not yet cultured — show the empty well, so the plate fills
+                    // in visibly rather than cutting between finished states.
+                    const ex = x + (i % per) * cellW, ey = y + Math.floor(i / per) * cellH;
+                    stroke(C.gray, 60); strokeWeight(1); noFill();
+                    rect(ex + 10, ey + 10, cellW - 20, cellH - 36);
+                    noStroke();
+                    if ((tick + i * 7) % 40 < 20) tinyText('CULTURING', ex + 14, ey + 14, C.gray, 8);
+                    continue;
+                }
+                const sp = specimens[i];
+                const gx = x + (i % per) * cellW;
+                const gy = y + Math.floor(i / per) * cellH;
+                const pad = 10;
+                const sw = cellW - pad * 2, sh = cellH - pad * 2 - 16;
+
+                const col = sp.anomaly ? C.anom : C.spec;
+                drawSpecimen(sp, gx + pad, gy + pad, sw, sh, col, false);
+
+                // A bounding box that actually bounds: scaled from measured bbox.
+                if (sp.m.mass > 0) {
+                    const u = sw / sp.R, v = sh / sp.R;
+                    const bx = gx + pad + sp.m.minX * u, by = gy + pad + sp.m.minY * v;
+                    const bw = sp.m.bw * u, bh = sp.m.bh * v;
+                    stroke(sp.anomaly ? C.anom : C.inst);
+                    strokeWeight(1); noFill();
+                    rect(bx, by, bw, bh);
+                    noStroke();
+                }
+
+                if (i === heroIndex) {
+                    bracket(gx + 3, gy + 3, cellW - 6, cellH - 6, 9, C.inst, 2);
+                }
+
+                tinyText(String(i + 1).padStart(2, '0'), gx + pad, gy + cellH - 26, C.white, 9);
+                tinyText(sp.id, gx + pad + 20, gy + cellH - 26, C.gray, 8);
+                tinyText(`${sp.m.mass}·L${sp.m.lobes}`, gx + pad, gy + cellH - 15,
+                         sp.anomaly ? C.anom : C.inst, 8);
+                if (sp.anomaly) {
+                    fill(C.anom); rect(gx + cellW - pad - 26, gy + cellH - 27, 26, 10);
+                    tinyText('VOID', gx + cellW - pad - 24, gy + cellH - 26, C.white, 8);
+                }
+            }
+        }
+
+        function drawHero(x, y, w, h) {
+            const sp = specimens[heroIndex];
+            if (!sp || heroIndex >= revealN) {
+                tinyText('HERO ASSAY', x, y - 14, C.white, 12);
+                tinyText('AWAITING CULTURE', x + 100, y - 10, C.gray, 8);
+                return;
+            }
+            const ann = Number(params.annotation);
+
+            tinyText('HERO ASSAY', x, y - 14, C.white, 12);
+            tinyText(`${sp.id} / ${sp.type}`, x + 100, y - 10, C.inst, 8);
+
+            const size = Math.min(w, h - 150);
+            const sx = x + (w - size) / 2, sy = y + 24;
+            const u = size / sp.R;
+
+            // Plot grid behind the specimen
+            stroke(255, 16); strokeWeight(0.5);
+            for (let g = 0; g <= sp.R; g += 5) {
+                line(sx + g * u, sy, sx + g * u, sy + size);
+                line(sx, sy + g * u, sx + size, sy + g * u);
+            }
+            noStroke();
+
+            drawSpecimen(sp, sx, sy, size, size, sp.anomaly ? C.anom : C.spec, false);
+
+            if (sp.m.mass > 0) {
+                // True bounding box + brackets
+                const bx = sx + sp.m.minX * u, by = sy + sp.m.minY * u;
+                const bw = sp.m.bw * u, bh = sp.m.bh * u;
+                stroke(C.inst); strokeWeight(1); noFill();
+                rect(bx, by, bw, bh);
+                noStroke();
+                bracket(bx - 5, by - 5, bw + 10, bh + 10, 12, C.inst, 1.5);
+                tinyText(`${sp.m.bw}×${sp.m.bh}`, bx, by - 12, C.inst, 9);
+
+                // Centroid
+                const ccx = sx + sp.m.cx * u, ccy = sy + sp.m.cy * u;
+                regMark(ccx, ccy, 9, C.white);
+                tinyText('CENTROID', ccx + 11, ccy - 10, C.white, 8);
+                tinyText(`${sp.m.cx.toFixed(1)},${sp.m.cy.toFixed(1)}`, ccx + 11, ccy, C.gray, 8);
+
+                // Measured radius
+                stroke(C.inst); strokeWeight(0.7); noFill();
+                ellipse(ccx, ccy, sp.m.radius * 2 * u, sp.m.radius * 2 * u);
+                noStroke();
+
+                // Leader lines terminating on REAL extremities.
+                const showN = Math.max(1, Math.round(sp.m.extremities.length * ann));
+                for (let i = 0; i < showN && i < sp.m.extremities.length; i++) {
+                    const e = sp.m.extremities[i];
+                    const ex = sx + (e.x + 0.5) * u, ey = sy + (e.y + 0.5) * u;
+                    const ang = Math.atan2(ey - ccy, ex - ccx);
+                    const lx = ex + Math.cos(ang) * 26, ly = ey + Math.sin(ang) * 26;
+                    stroke(C.inst); strokeWeight(1);
+                    line(ex, ey, lx, ly);
+                    const tx = lx + (Math.cos(ang) > 0 ? 4 : -46);
+                    line(lx, ly, lx + (Math.cos(ang) > 0 ? 16 : -16), ly);
+                    noStroke();
+                    fill(C.inst);
+                    rect(ex - 2.5, ey - 2.5, 5, 5);
+                    tinyText((e.d / sp.m.radius).toFixed(2),
+                             tx + (Math.cos(ang) > 0 ? 16 : 0), ly - 5, C.white, 9);
+                }
+
+                // Sector nodes: measured, boxed, in instrument colour
+                for (let i = 0; i < sp.m.extremities.length; i += 2) {
+                    const e = sp.m.extremities[i];
+                    const ex = sx + (e.x + 0.5) * u, ey = sy + (e.y + 0.5) * u;
+                    stroke(C.inst); strokeWeight(1); noFill();
+                    rect(ex - 7, ey - 7, 14, 14);
+                    noStroke();
+                }
+            }
+
+            // Registration marks at the plate corners
+            for (const [rx, ry] of [[x, y + 8], [x + w, y + 8], [x, y + h - 96], [x + w, y + h - 96]]) {
+                regMark(rx, ry, 7, C.white);
+            }
+
+            // Sequence + metrics beneath the hero
+            const by2 = sy + size + 16;
+            tinyText('SEQ', x, by2, C.gray, 8);
+            tinyText(sp.seq, x + 28, by2, C.inst, 9);
+            const rowsTxt = [
+                ['MASS', String(sp.m.mass)],
+                ['PERIM', String(sp.m.perim)],
+                ['DENSITY', sp.m.density.toFixed(3)],
+                ['COMPACT', sp.m.compactness.toFixed(3)],
+                ['LOBES', String(sp.m.lobes)],
+                ['RADIUS', sp.m.radius.toFixed(2)]
+            ];
+            let cxp = x;
+            for (const [k, v] of rowsTxt) {
+                tinyText(k, cxp, by2 + 16, C.gray, 8);
+                tinyText(v, cxp, by2 + 27, C.white, 10);
+                cxp += 84;
+            }
+        }
+
+        function drawAnalysis(x, y, w, h) {
+            tinyText('ANALYSIS', x, y - 14, C.white, 12);
+
+            // Big display type — counterpoint to the annotation scale
+            fill(C.white); noStroke();
+            textFont('monospace'); textSize(46); textAlign(LEFT, TOP);
+            text(rule.name.slice(0, 9), x, y + 6);
+            textSize(11);
+            fill(C.inst);
+            text(SYM_NAMES[symOrder], x, y + 58);
+
+            // Population mass distribution — real histogram of real masses
+            const hy = y + 90;
+            tinyText('MASS DISTRIBUTION', x, hy, C.gray, 8);
+            const bins = 12;
+            const counts = new Array(bins).fill(0);
+            const lo = survey.massMin, hi = Math.max(survey.massMax, lo + 1);
+            for (const s of specimens) {
+                const b = Math.min(bins - 1, Math.floor((s.m.mass - lo) / (hi - lo) * bins));
+                counts[b]++;
+            }
+            const peak = Math.max(1, ...counts);
+            const bw2 = w / bins;
+            for (let i = 0; i < bins; i++) {
+                const bh2 = (counts[i] / peak) * 90;
+                fill(counts[i] === peak ? C.inst : C.spec);
+                rect(x + i * bw2, hy + 108 - bh2, bw2 - 2, bh2);
+            }
+            stroke(C.gray); strokeWeight(1);
+            line(x, hy + 108, x + w, hy + 108);
+            noStroke();
+            tinyText(String(lo), x, hy + 112, C.gray, 8);
+            tinyText(String(survey.massMax), x + w - 28, hy + 112, C.gray, 8);
+
+            // Per-specimen readout table (real values)
+            const ty = hy + 136;
+            tinyText('NO   ID        MASS  LOB  CMP', x, ty, C.gray, 8);
+            stroke(C.gray, 120); line(x, ty + 11, x + w, ty + 11); noStroke();
+            const maxRows = Math.min(specimens.length, 14);
+            for (let i = 0; i < maxRows; i++) {
+                const s = specimens[i];
+                const ry = ty + 16 + i * 13;
+                const isHero = i === heroIndex;
+                if (isHero) { fill(C.inst); rect(x - 3, ry - 2, w + 6, 12); }
+                const tc = isHero ? color(0) : (s.anomaly ? C.anom : C.white);
+                tinyText(String(i + 1).padStart(2, '0'), x, ry, tc, 9);
+                tinyText(s.id, x + 30, ry, tc, 9);
+                tinyText(String(s.m.mass).padStart(4, ' '), x + 108, ry, tc, 9);
+                tinyText(String(s.m.lobes).padStart(3, ' '), x + 152, ry, tc, 9);
+                tinyText(s.m.compactness.toFixed(2), x + 190, ry, tc, 9);
+                // inline bar, scaled to the real population max
+                const bwid = (s.m.mass / Math.max(1, survey.massMax)) * 90;
+                fill(isHero ? color(0) : (s.anomaly ? C.anom : C.spec));
+                rect(x + 236, ry + 2, bwid, 7);
+            }
+
+            // Legend — teaches the colour code in seconds
+            const ly = y + h - 84;
+            const legend = [
+                [C.spec, 'SPECIMEN'],
+                [C.inst, 'INSTRUMENT'],
+                [C.anom, 'ANOMALY']
+            ];
+            for (let i = 0; i < legend.length; i++) {
+                fill(legend[i][0]);
+                rect(x, ly + i * 16, 10, 10);
+                tinyText(legend[i][1], x + 16, ly + i * 16, C.gray, 9);
+            }
+            tinyText(`MEAN MASS ${survey.massMean.toFixed(1)}`, x + 130, ly, C.white, 9);
+            tinyText(`MEAN CMP ${survey.compMean.toFixed(3)}`, x + 130, ly + 16, C.white, 9);
+            tinyText(`ANOMALIES ${survey.anomalies}`, x + 130, ly + 32,
+                     survey.anomalies ? C.anom : C.gray, 9);
+        }
+
+        function drawFooterStrip(blink) {
+            stroke(C.inst); strokeWeight(1);
+            line(20, 812, 1380, 812);
+            noStroke();
+            const msg = `${survey.code} // MORPHOLOGICAL SURVEY DIVISION // RULE B${rule.B.join('')}/S${rule.S.join('')} // ${SYM_NAMES[symOrder]} // LATTICE ${params.lattice}×${params.lattice} // CYCLES ${params.cycles} // `;
+            const scroll = (tick * 0.6) % 700;
+            tinyText((msg + msg).slice(0, 190), 20 - scroll * 0.0, 822, C.gray, 9);
+            for (let i = 0; i < 14; i++) regMark(60 + i * 96, 862, 4, C.gray);
+            if (blink) { fill(C.inst); rect(1340, 856, 12, 12); }
+            tinyText('REC', 1310, 858, C.inst, 9);
+            tinyText(`FRAME ${String(tick).padStart(6, '0')}`, 20, 862, C.gray, 9);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // SIDEBAR READOUT
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function updateAssay() {
+            const el = document.getElementById('assay');
+            if (!el || !specimens.length) return;
+            const sp = specimens[heroIndex];
+            el.innerHTML =
+                `<div>RULE <b>B${rule.B.join('')}/S${rule.S.join('')}</b> ${rule.name}</div>` +
+                `<div>SYMMETRY <b>${SYM_NAMES[symOrder]}</b></div>` +
+                `<div>POPULATION <b>${specimens.length}</b> · ANOM <b>${survey.anomalies}</b></div>` +
+                `<div style="margin-top:8px">HERO <b>${sp.id}</b> (${sp.type})</div>` +
+                `<div>MASS ${sp.m.mass} · LOBES ${sp.m.lobes}</div>` +
+                `<div>DENSITY ${sp.m.density.toFixed(3)}</div>` +
+                `<div>COMPACTNESS ${sp.m.compactness.toFixed(3)}</div>`;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // UI HANDLERS
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function updateParam(name, value) {
+            params[name] = parseFloat(value);
+            const d = document.getElementById(name + '-value');
+            if (d) d.textContent = value;
+            if (['population','cycles','lattice','symmetry','seedMass','anomalyThreshold'].includes(name)) {
+                initializeSystem();
+            }
+        }
+
+        function updateColor(id, value) {
+            const i = id === 'color1' ? 0 : id === 'color2' ? 1 : 2;
+            params.colorPalette[i] = value;
+            const d = document.getElementById(id + '-value');
+            if (d) d.textContent = value;
+            resolveColors();
+        }
+
+        function regenerate() { initializeSystem(); }
+
+        function toggleAmbient() {
+            ambient = !ambient;
+            ambientTick = 0;
+            revealN = ambient ? 0 : 1e9;
+            const b = document.getElementById('ambient-btn');
+            if (b) b.textContent = ambient ? '❚❚ Ambient' : '▶ Ambient';
+            const p = document.getElementById('ambient-pill');
+            if (p) { p.textContent = ambient ? 'ON' : 'OFF'; p.className = 'mode-pill' + (ambient ? ' on' : ''); }
+            const st = document.getElementById('stage');
+            if (st) st.classList.toggle('ambient-cursor', ambient);
+        }
+
+        function toggleFullscreen() {
+            const el = document.getElementById('stage');
+            if (!el) return;
+            if (!document.fullscreenElement) {
+                (el.requestFullscreen || el.webkitRequestFullscreen || function () {}).call(el);
+            } else {
+                (document.exitFullscreen || document.webkitExitFullscreen || function () {}).call(document);
+            }
+        }
+
+        function keyPressed() {
+            if (key === 'f' || key === 'F') toggleFullscreen();
+            else if (key === 'a' || key === 'A') toggleAmbient();
+            else if (key === ' ') { cycleHero(); return false; }
+            else if (keyCode === RIGHT_ARROW) nextSeed();
+            else if (keyCode === LEFT_ARROW) previousSeed();
+        }
+
+        function cycleHero() {
+            if (!specimens.length) return;
+            heroIndex = (heroIndex + 1) % specimens.length;
+            updateAssay();
+        }
+
+        function downloadPNG() {
+            saveCanvas('morphotype_' + params.seed, 'png');
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // SEED CONTROL FUNCTIONS - ALWAYS KEEP THESE
+        // ═══════════════════════════════════════════════════════════════════════
+
+        function updateSeedDisplay() {
+            const el = document.getElementById('seed-input');
+            if (el) el.value = params.seed;
+        }
+
+        function updateSeed() {
+            let input = document.getElementById('seed-input');
+            let newSeed = parseInt(input.value);
+            if (newSeed && newSeed > 0) {
+                params.seed = newSeed;
+                initializeSystem();
+            } else {
+                updateSeedDisplay();
+            }
+        }
+
+        function previousSeed() {
+            params.seed = Math.max(1, params.seed - 1);
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        function nextSeed() {
+            params.seed = params.seed + 1;
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        function randomSeedAndUpdate() {
+            params.seed = Math.floor(Math.random() * 999999) + 1;
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        function resetParameters() {
+            params = JSON.parse(JSON.stringify(defaultParams));
+            const ids = ['population','cycles','lattice','symmetry','annotation','anomalyThreshold','seedMass'];
+            for (const id of ids) {
+                const el = document.getElementById(id);
+                const dv = document.getElementById(id + '-value');
+                if (el) el.value = params[id];
+                if (dv) dv.textContent = params[id];
+            }
+            ['color1','color2','color3'].forEach((cid, i) => {
+                const ce = document.getElementById(cid);
+                const cv = document.getElementById(cid + '-value');
+                if (ce) ce.value = params.colorPalette[i];
+                if (cv) cv.textContent = params.colorPalette[i];
+            });
+            updateSeedDisplay();
+            initializeSystem();
+        }
+
+        // No UI to initialize; p5's own setup() drives boot directly into
+        // the ambient survey.
+    </script>
+</body>
+</html>
