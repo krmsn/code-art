@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ABYSS v1.0.0</title>
+<style>
+  html,body{margin:0;height:100%;background:#020308;overflow:hidden;}
+  body{font-family:"SF Mono",Menlo,Consolas,monospace;cursor:crosshair;}
+  canvas{display:block;position:fixed;inset:0;}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+"use strict";
+/* ============================================================
+   ABYSS - series #17 (17_abyss) - v1.0.0
+   ------------------------------------------------------------
+   PHILOSOPHY - "Pressure Corruption"
+
+   A signal degrades as a function of depth. The piece is a
+   submersible telemetry feed: a character-lattice window onto a
+   water column, flanked by instruments that read the descent.
+   Everything visible is a pure function of (column, row, tick,
+   hash). The dive timeline - phase, depth, life support, hull
+   integrity - is derived from a single virtual clock, so the
+   whole two-hour horizon is scrubbable in both directions.
+
+   The corruption is not decoration. Depth is the master
+   variable and it drives a real inter-frame codec: the lattice
+   is encoded in a GOP of I-frames and P-frames, and P-frames
+   reconstruct themselves from displaced macroblocks of the
+   previous frame. As pressure rises the motion vectors lengthen,
+   blocks freeze, hue drifts one step per generation, and the
+   image eats its own history. Hull creaks force a P-frame run
+   and spike the vector field. The instruments are not immune -
+   they mosh at reduced amplitude, because a corrupted readout is
+   still a readout.
+
+   DIVE -> BOTTOM CONTACT (hold) -> RESURFACE -> new dive, new
+   sub-hash. Five zones re-skin hue/accent/snow/fauna as you
+   sink: EPIPELAGIC / MESOPELAGIC / BATHYPELAGIC /
+   ABYSSOPELAGIC / HADAL.
+
+   CENTRE - the window: drifting marine snow, sonar rings,
+     bioluminescent fauna pinned to absolute depths, a rising
+     sediment floor, HADAL vent plumes, leviathan silhouettes.
+   LEFT   - descent gauge: PRES/TEMP/SPD/TIME/ZONE, mechanical
+     depth odometer, depth ruler with major/minor ticks.
+   RIGHT  - SONAR echosounder: hashed floor terrain, sweep,
+     fauna-coherent blips, O2 and HULL bars.
+
+   wheel scrub (both directions) . space thrust (hold)
+   R reseed . P palette . 1-6 palette direct . M mosh amount
+   D depth-jump . S save plate . H help . F fullscreen
+
+   v1.0.0 (verification pass)
+     · M mosh amount now gates ALL codec output, creak spikes
+       included - 0.00 is a true clean plate
+     · verify_abyss.js enforces the CONTRACT headlessly: 26
+       checks, 2400-tick coded soak, zero NaN, locked HUD cells
+       proven immune to displacement
+   ============================================================ */
+
+/* ============================================================
+   AMBIENT CONTRACT
+   Machine-readable invariants. verify_abyss.js enforces these.
+   ============================================================ */
+const CONTRACT={
+  version:"1.0.0",
+  deterministic:true,          /* hash alone determines the field */
+  singleCodepointGlyphs:true,  /* one codepoint per lattice cell  */
+  maxFlashFrac:0.12,           /* max cells with |dL|>0.4 in 1 tick */
+  maxStaticTicks:60,           /* every region must change within 2s */
+  minRegionFill:0.015,         /* every region must draw something  */
+  o2PinnedMaxFrac:0.25,        /* instruments must read, not peg    */
+  hullPinnedMaxFrac:0.25,
+  maxFieldMs:12,               /* field build budget per frame      */
+  scrubHealTicks:96            /* mosh state reconverges after scrub*/
+};
+
+const MI=Math.imul,MF=Math.floor,MS=Math.sin,MA=Math.abs,MN=Math.min,
+      MX=Math.max,MQ=Math.sqrt,MR=Math.round,MP=Math.pow;
+/* Hot built-ins are aliased at module scope. h31 is called on the
+   order of 50k times per frame; four unaliased Math.imul lookups
+   per call is real cost in a browser and catastrophic under a
+   contextified vm global (measured 146ns vs 1.3ns per lookup),
+   which would otherwise make the harness unable to measure the
+   piece at all. */
+
+/* ---------- seeded PRNG / hash noise ---------- */
+function cyrb128(str){let h1=1779033703,h2=3144134277,h3=1013904242,h4=2773480762;
+  for(let i=0,k;i<str.length;i++){k=str.charCodeAt(i);
+    h1=h2^MI(h1^k,597399067);h2=h3^MI(h2^k,2869860233);
+    h3=h4^MI(h3^k,951274213);h4=h1^MI(h4^k,2716044179);}
+  h1=MI(h3^(h1>>>18),597399067);h2=MI(h4^(h2>>>22),2869860233);
+  h3=MI(h1^(h3>>>17),951274213);h4=MI(h2^(h4>>>19),2716044179);
+  h1^=h2^h3^h4;h2^=h1;h3^=h1;h4^=h1;return[h1>>>0,h2>>>0,h3>>>0,h4>>>0];}
+function sfc32(a,b,c,d){return function(){a>>>=0;b>>>=0;c>>>=0;d>>>=0;
+  let t=(a+b)|0;a=b^b>>>9;b=c+(c<<3)|0;c=(c<<21|c>>>11)|0;d=d+1|0;t=t+d|0;c=c+t|0;
+  return(t>>>0)/4294967296;};}
+const B58="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+/* Math.random() is permitted HERE AND NOWHERE ELSE. A hash is an
+   input to the piece, not part of it. Everything downstream of
+   reseed() must be a pure function of this string. */
+function newHash(){let s="oo";for(let i=0;i<49;i++)s+=B58[(Math.random()*B58.length)|0];return s;}
+function makeR(h){const s=cyrb128(h);return sfc32(s[0],s[1],s[2],s[3]);}
+
+let SEEDN=0.1,SEEDI=1;
+/* Integer avalanche hash. v0.1.0 used the GLSL sin-fract idiom,
+   which cost a Math.sin per lattice sample - the three marine
+   snow layers alone were ~60k transcendentals per frame. This is
+   the same contract (integer lattice in, [0,1) out, stable) at
+   roughly an order of magnitude less cost, and it distributes
+   better than sin-fract does at large coordinates. */
+function h31(a,b,c){
+  let x=(MI(a|0,374761393)+MI(b|0,668265263)+MI(c|0,1274126177)+SEEDI)|0;
+  x=MI(x^(x>>>13),1274126177);
+  x=MI(x^(x>>>16),2246822519);
+  return((x^(x>>>15))>>>0)/4294967296;
+}
+function vn(x,y,salt){
+  const xi=MF(x),yi=MF(y);
+  const xf=x-xi,yf=y-yi;
+  const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+  const a=h31(xi,yi,salt),b=h31(xi+1,yi,salt);
+  const c2=h31(xi,yi+1,salt),d=h31(xi+1,yi+1,salt);
+  return a+(b-a)*u+(c2-a)*v+(a-b-c2+d)*u*v;
+}
+/* fbm for terrain: two octaves is enough at lattice resolution */
+function fbm(x,y,salt){return vn(x,y,salt)*0.65+vn(x*2.13,y*2.13,salt+0.5)*0.35;}
+
+/* Salt namespace. v0.1.0 reused overlapping salt integers across
+   call sites, which correlated noise between unrelated panels
+   (gutter static tracked centre static). Widely separated. */
+const S={
+  FLOOR:3130, SILT:3170, LEVI:5110, SNOW:[4110,4270,4430],
+  CAUSTIC:5210, RING:5330, STATIC:5470, VENT:6110, VENTJ:6230,
+  PROF:7190, SWEEP:7330, BLIP:7470, ODO:7610, GARBLE:7750,
+  MOSH:8110, MV:8270, GOP:8430, FREEZE:8590,
+  CREW:[9110,9270,9430,9590,9750,9910], CREAK:[10110,10270,10430],
+  LEVIP:[11110,11270,11430,11590,11750,11910]
+};
+
+function hsl(h,s,l){
+  h=((h%360)+360)%360;s=MX(0,MN(1,s));l=MX(0,MN(1,l));
+  const c=(1-MA(2*l-1))*s,x=c*(1-MA((h/60)%2-1)),m2=l-c/2;
+  let r,g,b;
+  if(h<60){r=c;g=x;b=0;}else if(h<120){r=x;g=c;b=0;}
+  else if(h<180){r=0;g=c;b=x;}else if(h<240){r=0;g=x;b=c;}
+  else if(h<300){r=x;g=0;b=c;}else{r=c;g=0;b=x;}
+  return[MF((r+m2)*255),MF((g+m2)*255),MF((b+m2)*255)];
+}
+const lerp=(a,b,t)=>a+(b-a)*t;
+const clamp01=x=>x<0?0:x>1?1:x;
+const TAU=Math.PI*2;
+function lerpAngle(a,b,f){let d=((b-a+540)%360)-180;return a+d*f;}
+function fmtT(s){s=MX(0,MR(s));const m=MF(s/60),x=s%60;
+  return m+":"+String(x).padStart(2,"0");}
+
+/* ---------- lattice / clock ---------- */
+const FONTPX=15,FONTFAM='"SF Mono",Menlo,Consolas,monospace';
+let CW=9,CH=18;
+const TICK_MS=1000/30;
+const SCALE=28;                     /* metres per row in the window */
+const MAXT=216000;                  /* scrub horizon: 2h of ticks   */
+const MB_W=4,MB_H=2;                /* macroblock size in cells     */
+let cols=0,rows=0,rowsHalf=0,GL=0,GR=0,MIDC=0,WIDE=true;
+let TOPY=2,BOTY=2;
+let cv=null,ctx=null;
+
+/* ---------- token state ---------- */
+let HASH="",SEED="",tick=0,acc=0,lastT=0,timeOff=0,scrollVel=0;
+let PALI=0,space=false,moshAmt=1.0,showHelp=true,helpT=0;
+const diveCache=new Map(),crewCache=new Map(),creakCache=new Map(),lifeCache=new Map();
+
+/* ---------- palettes ----------
+   Every field is live. v0.1.0 declared as/al/snow/bgl and read
+   none of them, so the six palettes were indistinguishable.
+   s    base saturation      as   accent saturation
+   al   accent lift          snow marine-snow density
+   glow emissive gain        bgl  underglow ceiling
+   mosh codec aggression                                        */
+const PALETTES=[
+ {name:"BIO",   s:0.85,as:0.95,al:0.55,snow:0.75,glow:1.00,bgl:0.030,mosh:0.85},
+ {name:"ABYSS", s:0.55,as:0.70,al:0.45,snow:0.55,glow:0.80,bgl:0.020,mosh:0.60},
+ {name:"GHOST", s:0.15,as:0.30,al:0.62,snow:0.50,glow:0.90,bgl:0.030,mosh:1.15},
+ {name:"SULFUR",s:0.90,as:0.95,al:0.58,snow:0.85,glow:1.05,bgl:0.040,mosh:0.95},
+ {name:"LUCENT",s:0.70,as:0.85,al:0.70,snow:0.95,glow:1.20,bgl:0.050,mosh:0.45},
+ {name:"BLOOD", s:0.95,as:1.00,al:0.50,snow:0.80,glow:0.90,bgl:0.035,mosh:1.30}
+];
+
+/* ---------- depth zones ----------
+   [depthM, hue, sat, accentHue, snowDensity, faunaDensity] */
+const ZP=[
+ [0,    200,0.50,190,0.80,0.30],
+ [200,  205,0.58,180,0.95,0.45],
+ [1000, 215,0.62,160,1.10,0.60],
+ [4000, 230,0.68,145,1.20,0.75],
+ [6000, 248,0.74,205,1.05,0.60],
+ [12000,265,0.80,320,0.90,0.45]
+];
+function zoneParams(dep){
+  const D=MX(0,MN(12000,dep));
+  let i=0;while(i<ZP.length-2&&D>ZP[i+1][0])i++;
+  const a=ZP[i],b=ZP[i+1];
+  const f=clamp01((D-a[0])/(b[0]-a[0]));
+  return{hue:lerpAngle(a[1],b[1],f),sat:lerp(a[2],b[2],f),
+    acc:lerpAngle(a[3],b[3],f),snow:lerp(a[4],b[4],f),cre:lerp(a[5],b[5],f)};
+}
+function zoneName(dep){
+  if(dep<200)return"EPIPELAGIC";
+  if(dep<1000)return"MESOPELAGIC";
+  if(dep<=4000)return"BATHYPELAGIC";
+  if(dep<=6000)return"ABYSSOPELAGIC";
+  return"HADAL";
+}
+
+/* ============================================================
+   THE DIVE TIMELINE
+   Pure functions of a virtual tick counter vt. Each dive n has
+   its own bottom depth, descent rate and hold, so total length
+   T(n) varies; the current dive is found by walking. Walk is
+   cheap because T(n) has a hard floor (see diveParams).
+   ============================================================ */
+function diveParams(n){
+  let p=diveCache.get(n);
+  if(p)return p;
+  const r=makeR(SEED+":d"+n);
+  const BOTTOM_DEP=5600+r()*3200;
+  const RATE=14+r()*12;
+  const HOLD_T=MR((28+r()*22)*30);
+  const descT=MX(1,Math.ceil(BOTTOM_DEP/RATE*30));
+  const riseT=MX(1,Math.ceil(BOTTOM_DEP/(RATE*1.6)*30));
+  let hs="";for(let i=0;i<6;i++)hs+=B58[(r()*B58.length)|0];
+  const GOP=40+MR(r()*50);          /* codec keyframe period */
+  p={n,BOTTOM_DEP,RATE,HOLD_T,descT,riseT,T:descT+HOLD_T+riseT,
+     hue0:r()*360,drift:(r()*2-1)*0.9,GOP,h6:hs};
+  if(diveCache.size>64){diveCache.clear();crewCache.clear();
+    creakCache.clear();lifeCache.clear();}
+  diveCache.set(n,p);
+  return p;
+}
+function diveAt(vt){
+  let n=0,u=vt<0?0:vt,guard=0;
+  while(guard++<4096){
+    const T=diveParams(n).T;
+    if(u<T)return{n,u};
+    u-=T;n++;
+  }
+  return{n,u:0};
+}
+function phaseOf(n,u){
+  const p=diveParams(n);
+  if(u<p.descT)return{ph:0,p:u/p.descT};
+  if(u<p.descT+p.HOLD_T)return{ph:1,p:(u-p.descT)/p.HOLD_T};
+  return{ph:2,p:(u-p.descT-p.HOLD_T)/p.riseT};
+}
+function depthAt(n,u){
+  const p=diveParams(n),ph=phaseOf(n,u);
+  if(ph.ph===0)return p.BOTTOM_DEP*ph.p;
+  if(ph.ph===1)return p.BOTTOM_DEP;
+  return p.BOTTOM_DEP*(1-ph.p);
+}
+
+/* ---------- fauna / leviathan / creaks (per dive, hashed) ---------- */
+function crew(n){
+  let v=crewCache.get(n);if(v)return v;
+  const cnt=10+(h31(n,0,S.CREW[0])*9|0),out=[];
+  for(let k=0;k<cnt;k++){
+    out.push({x0:h31(n,k,S.CREW[1]),d0:0.04+0.94*h31(n,k,S.CREW[2]),
+      spd:0.3+h31(n,k,S.CREW[3])*1.6,ph:h31(n,k,S.CREW[4])*TAU,
+      kind:(h31(n,k,S.CREW[5])*5)|0,sz:0.6+h31(n,k,S.CREW[0]+7)});
+  }
+  crewCache.set(n,out);return out;
+}
+/* v0.1.0 gated the leviathan on normalised dive TIME, so its
+   depth band and its visibility window were unrelated and it
+   usually streaked off-screen in two seconds. Now it is pinned
+   to a depth and appears whenever the sub is within range -
+   which means twice per dive, once down and once up. */
+function levi(n){
+  const p=diveParams(n);
+  return{present:h31(n,0,S.LEVIP[0])<0.45,
+    d:p.BOTTOM_DEP*(0.28+0.5*h31(n,1,S.LEVIP[1])),
+    x0:0.15+0.7*h31(n,2,S.LEVIP[2]),ph:h31(n,3,S.LEVIP[3])*TAU,
+    w:0.16+h31(n,4,S.LEVIP[4])*0.10,h:2.6+h31(n,5,S.LEVIP[5])*2.4};
+}
+/* HADAL vent field - documented in v0.1.0, never implemented. */
+function vents(n){
+  const p=diveParams(n),out=[];
+  if(p.BOTTOM_DEP<6000)return out;
+  const cnt=2+(h31(n,3,S.VENT)*3|0);
+  for(let k=0;k<cnt;k++){
+    out.push({x0:0.08+0.84*h31(n,k,S.VENT+11),h:6+h31(n,k,S.VENT+23)*9,
+      w:0.6+h31(n,k,S.VENT+37)*1.4,ph:h31(n,k,S.VENT+51)*TAU,
+      rate:0.5+h31(n,k,S.VENT+67)*1.1});
+  }
+  return out;
+}
+function creakList(n){
+  let v=creakCache.get(n);if(v)return v;
+  const p=diveParams(n),out=[];
+  const cnt=3+(h31(n,7,S.CREAK[0])*4|0);
+  for(let k=0;k<cnt;k++){
+    out.push({t:(p.descT*0.35+h31(n,k,S.CREAK[1])*p.T*0.55)|0,
+      dmg:1.2+h31(n,k,S.CREAK[2])*3.2,
+      o2:1.5+h31(n,k,S.CREAK[2]+13)*2.5});
+  }
+  out.sort((a,b)=>a.t-b.t);
+  creakCache.set(n,out);
+  return out;
+}
+const CREAK_LEN=40;
+function activeCreak(n,u){
+  for(const c of creakList(n))if(u>=c.t&&u<c.t+CREAK_LEN)return c;
+  return null;
+}
+
+/* ============================================================
+   LIFE SUPPORT - O2 + HULL
+   v0.1.0 re-integrated from tick 0 on every frame (O(vt)) and
+   drained O2 fast enough that the gauge pegged at zero ~127s
+   into a ~480s dive and stayed there. Now: checkpointed every
+   CKP ticks and built lazily, so a lookup costs one partial
+   segment; and the economy is tuned so both gauges traverse a
+   readable range across a full dive.
+   ============================================================ */
+const CKP=300;
+function lifeStep(n,st,v0,v1){
+  const p=diveParams(n),creaks=creakList(n);
+  let o2=st.o2,hull=st.hull,v=v0;
+  const step=10;
+  while(v<v1){
+    const nv=MN(v1,v+step);
+    const dep=depthAt(n,(v+nv)/2);
+    const deepF=dep/p.BOTTOM_DEP;
+    const dt=(nv-v)/30;
+    if(dep<200)o2=MN(100,o2+1.4*dt);
+    else o2=MX(0,o2-(0.058+deepF*0.092)*dt);
+    /* continuous quadratic hull stress from the surface down.
+       v0.1.0 gated this at deepF>0.75, so HULL read a flat 100%
+       for roughly half of every dive. */
+    hull=MX(0,hull-0.055*deepF*deepF*dt);
+    for(const c of creaks){
+      if(c.t>=v&&c.t<nv){hull=MX(0,hull-c.dmg);o2=MX(0,o2-c.o2);}
+    }
+    v=nv;
+  }
+  return{o2,hull};
+}
+function lifeAt(vt){
+  const {n,u}=diveAt(vt);
+  let arr=lifeCache.get(n);
+  if(!arr){arr=[{o2:100,hull:100}];lifeCache.set(n,arr);}
+  const want=MF(u/CKP);
+  while(arr.length<=want){
+    const i=arr.length-1;
+    arr.push(lifeStep(n,arr[i],i*CKP,(i+1)*CKP));
+  }
+  return lifeStep(n,arr[want],want*CKP,u);
+}
+
+/* ---------- sizing ---------- */
+function measureCell(){
+  let adv=0;
+  try{ctx.font=FONTPX+"px "+FONTFAM;adv=ctx.measureText("MMMMMMMMMM").width/10;}
+  catch(e){adv=0;}
+  if(!(adv>1))adv=FONTPX*0.6;           /* headless / metric failure */
+  CW=MX(6,MR(adv));       /* lattice pitch == advance  */
+  CH=MX(10,MR(FONTPX*1.22));
+}
+/* Left gutter must fit "SPD :  -41.6 m/s" without clipping.
+   v0.1.0 right-aligned into a negative x and silently lost
+   characters off the left edge on narrow windows. */
+const GUT_MIN=22;
+function layout(w,h){
+  cols=MX(24,MF(w/CW));
+  rows=MX(12,MF(h/CH));
+  rowsHalf=MF(rows/2);
+  TOPY=2;BOTY=rows-2;
+  WIDE=cols>=(GUT_MIN+GUT_MIN+24);
+  if(WIDE){
+    GL=MX(GUT_MIN,MF(cols*0.085));
+    GR=cols-2-MX(GUT_MIN-4,MF(cols*0.095));
+    if(GR-GL<20){GL=MN(GL,MF(cols*0.25));GR=MX(GL+20,cols-2-MF(cols*0.25));}
+  }else{GL=0;GR=cols-1;}
+  MIDC=GL+((GR-GL)>>1);
+  allocBuffers();
+}
+function resize(){
+  if(!ctx)return;
+  const dpr=MN(2,(typeof devicePixelRatio!=="undefined"?devicePixelRatio:1)||1);
+  measureCell();
+  layout(typeof innerWidth!=="undefined"?innerWidth:1600,
+         typeof innerHeight!=="undefined"?innerHeight:900);
+  cv.width=cols*CW*dpr;cv.height=rows*CH*dpr;
+  cv.style.width=cols*CW+"px";cv.style.height=rows*CH+"px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.textBaseline="top";
+  ctx.font=FONTPX+"px "+FONTFAM;
+  buildScanPattern();
+}
+
+/* ============================================================
+   FIELD BUFFERS
+   Three parallel-array frames (CUR clean / OUT coded / PREV
+   reference) so the codec pass has a real previous frame to
+   displace, and so the per-cell hot loop allocates nothing.
+   ============================================================ */
+let CUR=null,OUT=null,PREV=null,PREV_OK=false,OVL=null;
+function mkBuf(n){return{ch:new Array(n).fill(""),h:new Float32Array(n),
+  s:new Float32Array(n),l:new Float32Array(n),a:new Uint8Array(n),k:new Uint8Array(n)};}
+function allocBuffers(){
+  const n=cols*rows;
+  if(CUR&&CUR.h.length===n)return;
+  CUR=mkBuf(n);OUT=mkBuf(n);PREV=mkBuf(n);OVL=new Array(n).fill(null);
+  PREV_OK=false;
+}
+function clearBuf(B){B.ch.fill("");B.h.fill(0);B.s.fill(0);B.l.fill(0);B.a.fill(0);B.k.fill(0);}
+function copyCell(D,di,Sb,si){D.ch[di]=Sb.ch[si];D.h[di]=Sb.h[si];D.s[di]=Sb.s[si];
+  D.l[di]=Sb.l[si];D.a[di]=Sb.a[si];D.k[di]=Sb.k[si];}
+
+/* shared scratch - callers copy immediately, never retain */
+const G={ch:"",h:0,s:0,l:0,a:0,k:0};
+function gg(ch,h,s,l,a,k){G.ch=ch;G.h=h;G.s=s;G.l=l;G.a=a?1:0;G.k=k?1:0;return G;}
+
+/* right-aligned write that refuses to run off the left edge */
+function alignR(c,x1,str,h,s,l,a,k){
+  if(x1<=0)return null;
+  if(str.length>x1)str=str.slice(str.length-x1);   /* truncate, never clip off-canvas */
+  const x0=x1-str.length;
+  const i=c-x0;
+  if(i<0||i>=str.length)return null;
+  return gg(str[i],h,s,l,a,k);
+}
+function alignL(c,x0,str,h,s,l,a,k){
+  const i=c-x0;
+  if(i<0||i>=str.length)return null;
+  return gg(str[i],h,s,l,a,k);
+}
+
+/* ============================================================
+   SPARSE OVERLAY
+   Fauna, leviathan and vent plumes are stamped once per frame
+   into a sparse layer. v0.1.0 tested every creature against
+   every cell (~95k hypot/frame at 1080p); this is O(stamped).
+   ============================================================ */
+function stamp(c,r,ch,h,s,l,a){
+  if(c<GL||c>=GR||r<=TOPY||r>=BOTY)return;
+  const i=r*cols+c;
+  const e=OVL[i];
+  if(e&&e.l>=l)return;                       /* brightest wins */
+  OVL[i]={ch,h,s,l,a:a?1:0};
+}
+const FAUNA=["\u2591","\u2726","\u276f","\u00bb","\u00b7"];
+function stampOverlay(ct){
+  OVL.fill(null);
+  const {t,DEP,p,Z,P,deepF,n}=ct;
+  const Wc=GR-GL;
+  const floorRow=rowsHalf+(p.BOTTOM_DEP-DEP)/SCALE;
+
+  /* leviathan: depth-pinned, seen on the way down and back up */
+  const L=levi(n);
+  if(L.present){
+    const cy=rowsHalf+(L.d-DEP)/SCALE;
+    if(cy>-14&&cy<rows+14){
+      const cx=GL+L.x0*Wc+MS(t*0.07+L.ph)*Wc*0.12;
+      const hwMax=L.w*Wc;
+      const c0=MX(GL,MF(cx-hwMax-L.h*3)),c1=MN(GR-1,Math.ceil(cx+hwMax+L.h*3));
+      const r0=MX(TOPY+1,MF(cy-L.h-1)),r1=MN(BOTY-1,Math.ceil(cy+L.h+1));
+      for(let r=r0;r<=r1;r++){
+        const dy=r-cy;
+        const k=1-(dy/L.h)*(dy/L.h);
+        const hw=k>0?hwMax*MQ(k):-1;
+        for(let c=c0;c<=c1;c++){
+          const dx=c-cx;
+          if(hw>=0&&MA(dx)<=hw+0.6){
+            const edge=MA(dx)>hw-1.2;
+            const bv=vn(c*0.3,r*0.2,S.LEVI);
+            stamp(c,r,edge?"\u2593":(bv>0.5?"\u2591":"\u2592"),Z.hue,0.20,
+              edge?0.16*P.glow:0.045,0);
+          }else if(MA(dy)<0.9&&dx>hw&&dx<hw+L.h*2.6){
+            const tg=1-(dx-hw)/(L.h*2.6);
+            stamp(c,r,"\u2592",Z.hue,0.20,0.05+0.08*tg,0);
+          }
+        }
+      }
+    }
+  }
+
+  /* bioluminescent fauna, pinned to absolute depths */
+  const list=crew(n);
+  for(let k=0;k<list.length;k++){
+    const cr=list[k];
+    const cd=cr.d0*p.BOTTOM_DEP;
+    const cy=rowsHalf+(cd-DEP)/SCALE+MS(t*0.6+cr.ph*2)*0.9;
+    if(cy<TOPY||cy>=BOTY)continue;
+    const cx=GL+cr.x0*Wc+MS(t*cr.spd+cr.ph)*2.4;
+    if(cx<GL||cx>=GR)continue;
+    const b=(0.30+0.45*deepF)*P.glow*(0.7+0.3*MS(t*2+cr.ph));
+    const ci=MR(cx),ri=MR(cy);
+    stamp(ci,ri,FAUNA[cr.kind],Z.acc+(cr.kind===1?-10:0),0.90,MN(0.72,b),1);
+    stamp(ci-1,ri,"\u00b7",Z.acc,0.70,b*0.42,1);
+    stamp(ci+1,ri,"\u00b7",Z.acc,0.70,b*0.42,1);
+    if(cr.sz>1.2){stamp(ci,ri-1,"\u00b7",Z.acc,0.60,b*0.30,1);
+      stamp(ci,ri+1,"\u00b7",Z.acc,0.60,b*0.30,1);}
+  }
+
+  /* HADAL vent plumes - only when the floor is in frame */
+  if(DEP>6000&&floorRow>TOPY&&floorRow<BOTY+4){
+    const vs=vents(n);
+    for(const V of vs){
+      const vx=GL+V.x0*Wc;
+      for(let j=0;j<V.h;j++){
+        const rise=(t*V.rate*3+V.ph*4)%V.h;
+        const rr=MR(floorRow-((j+rise)%V.h));
+        if(rr<=TOPY||rr>=BOTY)continue;
+        const spread=V.w*(1+((j+rise)%V.h)/V.h*2.2);
+        const wob=MS(t*1.1+j*0.7+V.ph)*spread*0.5;
+        const fade=1-((j+rise)%V.h)/V.h;
+        const cW=MX(0,MR(spread));
+        for(let dc=-cW;dc<=cW;dc++){
+          const cc=MR(vx+wob+dc);
+          if(h31(cc,rr,S.VENTJ+MF(t*4))>0.45+0.4*(MA(dc)/(cW+1)))continue;
+          const hot=fade*fade;
+          stamp(cc,rr,hot>0.6?"\u25b4":(hot>0.3?"\u00b0":"\u00b7"),
+            lerpAngle(Z.acc,28,hot*0.75),0.85,(0.10+0.34*hot)*P.glow,1);
+        }
+      }
+    }
+  }
+}
+
+/* ============================================================
+   CENTRE - the window into the abyss
+   ============================================================ */
+function abyssGlyph(c,r,ct){
+  const {vt,t,DEP,p,Z,P,deepF,n,ph}=ct;
+  const i=r*cols+c;
+  const ov=OVL[i];
+  if(ov)return gg(ov.ch,ov.h,ov.s,ov.l,ov.a,0);
+
+  const floorRow=rowsHalf+(p.BOTTOM_DEP-DEP)/SCALE;
+  const dx=ct.driftX;
+
+  /* sediment floor + silt kicked up during bottom contact */
+  if(r>floorRow+0.5){
+    const below=r-floorRow;
+    const d=fbm((c+dx)*0.18,r*0.28,S.FLOOR);
+    const ch=d>0.55?"\u2593":d>0.32?"\u2592":"\u2591";
+    return gg(ch,Z.hue,0.30,0.05+0.03*MN(8,below)/8,0,0);
+  }
+  if(r>floorRow-0.6){
+    const flick=vn((c+dx)*0.4,vt*0.05,S.SILT);
+    return gg(flick>0.5?"\u2585":"\u2582",Z.acc,0.90,0.20+0.18*flick,1,0);
+  }
+  if(ph.ph===1&&r>floorRow-4){
+    const lift=(floorRow-r)/4;
+    if(h31(c,r,MF(t*3)+S.SILT)<0.28*(1-lift))
+      return gg("\u00b7",Z.hue,0.45,0.10+0.14*(1-lift),0,0);
+  }
+
+  /* marine snow - three parallax layers, faster as you descend */
+  const snowBase=p.RATE/SCALE;
+  const den=Z.snow*P.snow;
+  const snowGate=den*0.5*(0.5+deepF*0.6);
+  for(let ly=0;ly<3;ly++){
+    /* cheap gate first: one hash rejects most cells before the
+       four-tap noise fetch is ever paid for */
+    if(h31(c,r,MF(t*3)+ly*7+S.SNOW[ly])>=snowGate)continue;
+    const sp=SNOWL[ly][0]*snowBase,th=SNOWL[ly][1];
+    const v=vn((c+dx*SNOWL[ly][2])*0.055,(r-t*sp+ly*13.3)*0.09,S.SNOW[ly]);
+    if(v>th){
+      return gg(SNOWL[ly][3],Z.hue+(ly===2?10:0),0.50,
+        (0.10+0.25*(v-th)/(1-th))*(0.8+deepF*0.4),0,0);
+    }
+  }
+  /* caustic shafts - surface only */
+  if(DEP<400){
+    const sh=((c*2-r*3)%7+7)%7;
+    if(sh<2&&h31(c,r,MF(t*8)+S.CAUSTIC)<MX(0,0.55*(1-deepF*1.5))){
+      return gg(":",Z.hue,0.60,0.08+0.05*MS(t*2+c*0.5),0,0);
+    }
+  }
+  /* sonar rings radiating from the submersible */
+  const ra=(vt%45)/45;
+  if(ra<0.85){
+    const rr=1+ra*16;
+    const ddx=c-MIDC,ddy=(r-rowsHalf)*1.7;   /* lattice aspect correction */
+    const dd=MA(MQ(ddx*ddx+ddy*ddy)-rr);
+    if(dd<1.1&&h31((vt/45|0),c,r+S.RING)<0.5){
+      return gg(dd<0.5?"o":"\u00b7",Z.acc,1,0.28*(1-ra)*P.glow,1,0);
+    }
+  }
+  /* pressure dropout - faint static bleed */
+  if(h31(c,r,MF(t*2)+S.STATIC)<0.02+deepF*0.06)
+    return gg(";",Z.hue,0.30,0.10,0,0);
+  return null;
+}
+const BEACON=["\u2502","\u2571","\u2500","\u2572"];
+const SNOWL=[[0.7,0.55,0.9,"."],[1.6,0.72,0.55,"\u00b7"],[3.2,0.86,0.25,"\u2219"]];
+
+/* ============================================================
+   LEFT GUTTER - descent gauge + mechanical odometer
+   ============================================================ */
+function gDescent(c,r,ct){
+  const R=ct.P,Z=ct.Z,bw=GL-6;
+  if(c<0||c>=bw||r<=TOPY||r>=BOTY)return null;
+  const lines=[
+    ["PRES",MR(ct.pres)+" bar"],
+    ["TEMP",ct.temp.toFixed(1)+" C"],
+    ["SPD", ct.spd.toFixed(1)+" m/s"],
+    ["TIME",ct.retTxt],
+    ["PHAS",ct.phaseN],
+    ["ZONE",zoneName(ct.DEP).slice(0,8)]
+  ];
+  const li=r-(TOPY+1);
+  if(li>=0&&li<lines.length){
+    const k=lines[li][0],v=lines[li][1];
+    let g=alignL(c,1,k,Z.hue,R.s*0.4,0.20,0,1);if(g)return g;
+    if(c===1+k.length)return gg(":",Z.hue,0.30,0.14,0,1);
+    return alignR(c,bw-1,v,Z.hue,R.s*0.85,0.44,0,1);
+  }
+  /* mechanical odometer: digit wheels roll on carry, they do not
+     flicker at random the way v0.1.0 did */
+  const oy0=MX(TOPY+8,BOTY-11);
+  const depI=MX(0,MF(ct.DEP));
+  const depStr=String(depI).padStart(5,"0");
+  const x0=MX(0,bw-6);
+  if(r===oy0&&c>=x0&&c<x0+5)
+    return gg(depStr[c-x0],Z.acc,1,0.62,1,1);
+  if(r===oy0+1&&c>=x0&&c<x0+5){
+    const di=c-x0;
+    const pv=MP(10,4-di);
+    const frac=(ct.DEP/pv)%1;
+    const rolling=frac>0.86||frac<0.14;
+    const nd=(parseInt(depStr[di],10)+(frac>0.86?1:9))%10;
+    return gg(rolling?String(nd):depStr[di],Z.acc,0.80,rolling?0.34:0.16,1,1);
+  }
+  if(r===oy0+2)return alignR(c,bw-1,"DEPTH",Z.hue,0.50,0.22,0,1);
+  if(r===oy0+4)return alignR(c,bw-1,"MOSH "+moshAmt.toFixed(2),Z.hue,0.40,0.18,0,1);
+  return null;
+}
+
+/* ============================================================
+   RULER - depth ticks along the inner gutter edge
+   ============================================================ */
+function rulerGlyph(c,r,ct){
+  if(c<GL-6||c>GL-1||r<=TOPY||r>=BOTY)return null;
+  const R=ct.P,Z=ct.Z;
+  const rowDep=ct.DEP+(r-rowsHalf)*SCALE;
+  const t200=MR(rowDep/200)*200;
+  const nearTick=t200>0&&MA(rowDep-t200)<SCALE*0.48;
+  if(c===GL-1){
+    if(MA(r-rowsHalf)<0.5)return gg("\u25b6",Z.acc,1,0.66,1,1);
+    if(nearTick){
+      const major=(t200%1000)===0;
+      return gg(major?"\u256a":"\u251c",Z.hue,major?R.s*0.9:R.s*0.5,major?0.30:0.16,0,1);
+    }
+    if(r%2===0){
+      const sh=h31(r,MF(ct.t*3),S.PROF+91);
+      return gg(sh>0.72?"\u00b7":":",Z.hue,0.30,0.07+0.07*sh,0,0);
+    }
+    return null;
+  }
+  if(MA(r-rowsHalf)<0.5)
+    return alignR(c,GL-1,String(MR(ct.DEP))+"m",Z.acc,1,0.56,1,1);
+  if(nearTick)
+    return alignR(c,GL-1,String(t200)+"m",Z.hue,0.65,0.26,0,0);
+  return null;
+}
+
+/* ============================================================
+   RIGHT GUTTER - SONAR echosounder + life bars
+   Floor "profile" was a flat line in v0.1.0 despite the header
+   promising terrain; it is now hashed fbm terrain scrolling past
+   the sub, and the blips are coherent with the actual fauna list
+   rather than free-running noise.
+   ============================================================ */
+function gSonar(c,r,ct){
+  if(r<=TOPY||r>=BOTY)return null;
+  const R=ct.P,Z=ct.Z,p=ct.p,life=ct.life;
+  const W=cols-1-GR,l=c-GR;
+  if(l<1||l>=W)return null;
+  if(r===TOPY+1){
+    let g=alignL(c,GR+1,"SONAR",Z.acc,0.90,0.46,1,1);if(g)return g;
+    return alignR(c,cols-2,p.h6,Z.hue,0.40,0.20,0,1);
+  }
+  const profTop=TOPY+3,profBot=BOTY-8;
+  if(r>=profTop&&r<=profBot){
+    const profH=profBot-profTop+1;
+    const distF=(p.BOTTOM_DEP-ct.DEP)/p.BOTTOM_DEP;
+    const terr=(fbm(l*0.22+ct.driftX*0.12,ct.n*3.1,S.PROF)-0.5)*profH*0.10;
+    const floorRow=profTop+clamp01(distF)*(profH-1)+terr;
+    if(r>floorRow+0.5){
+      const d=vn(l*0.4,ct.t*0.06,S.PROF+7);
+      const below=r-floorRow;
+      return gg(d>0.5?"\u2593":d>0.3?"\u2592":"\u2591",Z.hue,0.30,
+        0.06+0.04*MN(4,below)/4,0,0);
+    }
+    if(r>floorRow-0.5&&r<=floorRow+0.5)
+      return gg("\u2582",Z.acc,0.90,0.26,1,0);
+    /* sweep */
+    const sweepRow=profTop+((ct.t*30)%45)/45*profH;
+    if(MA(r-sweepRow)<0.6&&h31(l,r,MF(ct.t*6)+S.SWEEP)<0.5)
+      return gg(h31(l,r,MF(ct.t*6)+S.SWEEP+3)<0.5?"\u00b7":"\u2502",
+        Z.acc,0.80,0.30,1,0);
+    /* fauna-coherent blips: real contacts, scaled into the profile */
+    const bl=ct.blips;
+    for(let k=0;k<bl.length;k++){
+      const br=profTop+bl[k].y*(profH-1);
+      const bc=1+bl[k].x*(W-2);
+      if(MA(r-br)<0.6&&MA(l-bc)<0.8)
+        return gg("\u2022",Z.acc,1,0.30+0.30*bl[k].g,1,0);
+    }
+    if(h31(l,r,MF(ct.t*2)+S.BLIP)<0.010*W)
+      return gg("\u00b7",Z.hue,0.60,0.18,0,0);
+    return null;
+  }
+  /* O2 / HULL bars */
+  const barR0=BOTY-6;
+  if(r===barR0||r===barR0+1){
+    const isO2=r===barR0;
+    const val=isO2?life.o2:life.hull;
+    const lab=isO2?"O2":"HL";
+    let g=alignL(c,GR+1,lab,isO2?150:40,0.90,0.38,0,1);if(g)return g;
+    const barX=GR+1+lab.length+1,barW=cols-2-barX;
+    if(barW<2)return null;
+    const filled=MR(barW*val/100);
+    const hue=isO2?lerp(0,150,val/100):lerp(0,140,val/100);
+    if(c>=barX&&c<barX+barW){
+      const idx=c-barX;
+      const warn=val<25;
+      if(idx<filled)return gg(val>30?"\u2588":"\u2592",hue,0.90,
+        0.36+(warn?0.16*MS(ct.t*3):0.06),0,1);
+      return gg("\u00b7",hue,0.50,0.10,0,1);
+    }
+    return null;
+  }
+  if(r===BOTY-3)
+    return alignL(c,GR+1,"NAV "+p.h6,Z.hue,0.40,0.16,0,1);
+  if(r===BOTY-2)
+    return alignL(c,GR+1,"GOP "+p.GOP+" \u00b7 I"+ct.gopIdx,Z.hue,0.35,0.14,0,1);
+  return null;
+}
+
+/* ---------- top / bottom bars (locked: never moshed) ---------- */
+function topGlyph(c,r,ct){
+  const R=ct.P,Z=ct.Z;
+  let g=alignL(c,1,"ABYSS",Z.hue,R.s,0.52,0,1);if(g)return g;
+  /* beacon: the only element of the top bar that is alive during
+     BOTTOM CONTACT, when depth, phase and zone are all frozen */
+  if(c===6){
+    const bph=(ct.vt%20)/20;
+    return gg(bph<0.5?"\u00b7":"\u00b0",Z.acc,1,0.20+0.28*MA(0.5-bph)*2,1,1);
+  }
+  if(c===7)return gg(BEACON[ct.vt%BEACON.length],Z.acc,0.8,0.30,1,1);
+  const cs=ct.phaseN+" "+String(MR(ct.DEP))+"m "+zoneName(ct.DEP);
+  const cx0=MF(cols/2-cs.length/2);
+  g=alignL(c,cx0,cs,Z.hue,R.s*0.7,0.44,0,1);if(g)return g;
+  return alignR(c,cols-2,"P"+(ct.pali+1)+" "+PALETTES[ct.pali].name+" "+ct.p.h6,
+    Z.acc,0.90,0.36,1,1);
+}
+function bottomGlyph(c,r,ct){
+  const Z=ct.Z;
+  const bs="ABYSS v"+CONTRACT.version+" \u00b7 #"+ct.n+" \u00b7 "+ct.phaseN+
+    " \u00b7 O2 "+MR(ct.life.o2)+"% \u00b7 HULL "+MR(ct.life.hull)+
+    "% \u00b7 T"+(ct.vt);
+  let g=alignL(c,1,bs,Z.hue,0.40,0.28,0,1);if(g)return g;
+  if(showHelp)return alignR(c,cols-2,
+    "WHEEL scrub \u00b7 SPACE thrust \u00b7 R P M D S H F",Z.hue,0.30,0.20,0,1);
+  return null;
+}
+
+/* ---------- build one clean frame ---------- */
+function buildField(ct){
+  clearBuf(CUR);
+  stampOverlay(ct);
+  for(let r=0;r<rows;r++){
+    const base=r*cols;
+    for(let c=0;c<cols;c++){
+      let g=null;
+      if(r===TOPY)g=topGlyph(c,r,ct);
+      else if(r===BOTY)g=bottomGlyph(c,r,ct);
+      else if(!WIDE)g=abyssGlyph(c,r,ct);
+      else if(c<=GL-7)g=gDescent(c,r,ct);
+      else if(c<=GL-1)g=rulerGlyph(c,r,ct);
+      else if(c<GR)g=abyssGlyph(c,r,ct);
+      else g=gSonar(c,r,ct);
+      if(!g)continue;
+      const i=base+c;
+      CUR.ch[i]=g.ch;CUR.h[i]=g.h;CUR.s[i]=g.s;CUR.l[i]=g.l;CUR.a[i]=g.a;CUR.k[i]=g.k;
+    }
+  }
+  return CUR;
+}
+
+/* ---------- per-frame context (pure) ---------- */
+function blipsFor(n,p,DEP,t){
+  const out=[],list=crew(n);
+  for(let k=0;k<list.length;k++){
+    const cd=list[k].d0*p.BOTTOM_DEP;
+    if(MA(cd-DEP)>1500)continue;
+    out.push({x:list[k].x0,y:clamp01((p.BOTTOM_DEP-cd)/p.BOTTOM_DEP),
+      g:0.5+0.5*MS(t*2+list[k].ph)});
+  }
+  return out;
+}
+function ctxAt(vt){
+  const t=vt/30;
+  const {n,u}=diveAt(vt);
+  const p=diveParams(n);
+  const DEP=depthAt(n,u);
+  const ph=phaseOf(n,u);
+  const Z0=zoneParams(DEP);
+  const Z={hue:(Z0.hue+p.hue0*0.08)%360,sat:Z0.sat,acc:(Z0.acc+p.hue0*0.08)%360,
+    snow:Z0.snow,cre:Z0.cre};
+  const P=PALETTES[PALI];
+  const deepF=DEP/p.BOTTOM_DEP;
+  const life=lifeAt(vt);
+  const phaseN=["DIVE","BOTTOM","RISE"][ph.ph];
+  const spd=ph.ph===2?-p.RATE*1.6:ph.ph===1?0:p.RATE;
+  const ret=ph.ph===2?((p.riseT-(u-p.descT-p.HOLD_T))/30):
+    ph.ph===1?((p.descT+p.HOLD_T-u)/30):((p.descT-u)/30);
+  const creak=activeCreak(n,u);
+  /* codec state - GOP index and position are dive-local, so the
+     keyframe cadence is reproducible from the hash alone */
+  const gopIdx=MF(u/p.GOP),gopPos=u%p.GOP;
+  const creakAge=creak?(u-creak.t)/CREAK_LEN:1;
+  const creakBoost=creak?0.55*(1-creakAge):0;
+  const ramp=creak?1:(gopPos/p.GOP);
+  /* a creak suppresses the scheduled keyframe so corruption runs
+     through the event - but a forced IDR keeps the worst-case
+     gap inside CONTRACT.scrubHealTicks, which is what bounds how
+     long a scrubbed codec state can stay non-canonical */
+  const iframe=(u%CONTRACT.scrubHealTicks===0)||((gopPos===0)&&!creak);
+  const moshI=clamp01(((0.10+0.55*deepF+0.35*(1-life.hull/100))*ramp*P.mosh+
+    creakBoost)*moshAmt);
+  const driftX=p.drift*(u/30)*0.10+(ph.ph===1?p.drift*(u-p.descT)/30*0.5:0);
+  return{vt,t,n,u,p,DEP,ph,Z,P,deepF,life,phaseN,
+    pres:1+DEP/10,temp:MX(1.5,15-DEP*0.0033),spd,
+    retTxt:fmtT(ret),pali:PALI,driftX,creak,creakBoost,
+    gopIdx,gopPos,iframe,moshI,rowsPerTick:p.RATE/SCALE/30,
+    blips:blipsFor(n,p,DEP,t)};
+}
+
+/* ============================================================
+   THE CODEC - inter-frame corruption
+   I-frames reproduce the clean field. P-frames rebuild
+   themselves from displaced macroblocks of the previous OUTPUT
+   frame, so error compounds across the GOP and resets at the
+   next keyframe. Motion vectors bias upward because the world
+   rises past a descending sub.
+
+   One deliberate departure from real codec semantics: an empty
+   source cell falls through to the clean field rather than
+   blanking the destination. Literal semantics turn a sparse
+   character lattice into black rectangles; falling through
+   preserves the smear-and-accumulate read that the reference
+   material is actually about.
+
+   Locked cells (k=1) - title bars, readouts, odometer - are
+   exempt, and locked cells are never used as a displacement
+   SOURCE, so HUD text never smears into the water column.
+
+   This pass is path-dependent by construction. Scrubbing yields
+   a valid but non-canonical codec state that reconverges at the
+   next keyframe, bounded by CONTRACT.scrubHealTicks.
+   ============================================================ */
+const HUE_DRIFT=9;
+function moshFrame(ct){
+  const n=cols*rows;
+  if(ct.iframe||!PREV_OK||ct.moshI<=0.001){
+    for(let i=0;i<n;i++)copyCell(OUT,i,CUR,i);
+    return OUT;
+  }
+  const mi=ct.moshI;
+  const bxn=Math.ceil(cols/MB_W),byn=Math.ceil(rows/MB_H);
+  for(let by=0;by<byn;by++){
+    const r0=by*MB_H,r1=MN(rows,r0+MB_H);
+    for(let bx=0;bx<bxn;bx++){
+      const c0=bx*MB_W,c1=MN(cols,c0+MB_W);
+      const inGut=WIDE&&(c0<GL||c1>GR);
+      const bmi=inGut?mi*0.35:mi;          /* instruments corrupt gently */
+      const on=h31(bx,by,ct.gopIdx*7+S.MOSH)<bmi;
+      let sx=0,sy=0,frozen=false;
+      if(on){
+        frozen=h31(bx,by,ct.gopIdx*7+S.FREEZE)<0.18*bmi;
+        if(!frozen){
+          const fx=vn(bx*0.17,by*0.17+ct.t*0.05,S.MV)-0.5;
+          const fy=vn(bx*0.19+7.3,by*0.19+ct.t*0.05,S.MV+11)-0.5;
+          sx=MR(fx*7*bmi);
+          sy=MR((fy+0.22)*6*bmi);
+        }
+      }
+      for(let r=r0;r<r1;r++){
+        const base=r*cols;
+        const lockRow=(r===TOPY||r===BOTY);   /* whole bar, gaps included */
+        for(let c=c0;c<c1;c++){
+          const di=base+c;
+          if(!on||lockRow||CUR.k[di]){copyCell(OUT,di,CUR,di);continue;}
+          const sc=c+sx,sr=r+sy;
+          if(sc<0||sc>=cols||sr<0||sr>=rows){copyCell(OUT,di,CUR,di);continue;}
+          const si=sr*cols+sc;
+          if(PREV.ch[si]===""||PREV.k[si]){copyCell(OUT,di,CUR,di);continue;}
+          OUT.ch[di]=PREV.ch[si];
+          OUT.h[di]=PREV.h[si]+HUE_DRIFT*bmi;
+          OUT.s[di]=MN(1,PREV.s[si]*(1+0.04*bmi));
+          OUT.l[di]=PREV.l[si]*(frozen?0.985:0.940);
+          OUT.a[di]=PREV.a[si];
+          OUT.k[di]=0;
+        }
+      }
+    }
+  }
+  return OUT;
+}
+function swapFrames(){const tmp=PREV;PREV=OUT;OUT=tmp;PREV_OK=true;}
+
+/* ---------- raster ----------
+   Shade and half blocks are painted as rects rather than glyphs.
+   v0.1.0 drew them as text with CW=10 under a 13px font whose
+   advance was ~7.8px, so every sediment field tiled with gaps.
+   Rects tile exactly at any font metric.                        */
+const SHADE={"\u2591":0.25,"\u2592":0.50,"\u2593":0.75,"\u2588":1.00};
+const HALFB={"\u2582":0.25,"\u2585":0.625};
+const CHROMA=1.6;
+let scanPat=null;
+function buildScanPattern(){
+  try{
+    const oc=document.createElement("canvas");oc.width=1;oc.height=3;
+    const o=oc.getContext("2d");
+    o.fillStyle="rgba(255,255,255,0.030)";o.fillRect(0,0,1,1);
+    scanPat=ctx.createPattern(oc,"repeat");
+  }catch(e){scanPat=null;}
+}
+function raster(F,ct){
+  const P=ct.P,Z=ct.Z;
+  ctx.fillStyle="#020308";ctx.fillRect(0,0,cols*CW,rows*CH);
+  ctx.font=FONTPX+"px "+FONTFAM;
+  /* underglow - P.bgl is finally load-bearing */
+  const bgH=Z.hue+10;
+  for(let r=0;r<rows;r++){
+    const dist=MA(r-rowsHalf)/MX(1,rowsHalf);
+    const breath=0.5+0.5*MS(ct.t*0.4+SEEDN);
+    const dim=(1-ct.deepF*0.7)*(0.85-0.45*dist);
+    const bg=hsl(bgH,P.s*0.5,0.005+P.bgl*dim*breath);
+    ctx.fillStyle="rgb("+bg[0]+","+bg[1]+","+bg[2]+")";
+    ctx.fillRect(0,r*CH,cols*CW,CH);
+  }
+  const deep=ct.deepF>0.55;
+  for(let r=0;r<rows;r++){
+    const yy=r*CH,base=r*cols;
+    for(let c=0;c<cols;c++){
+      const i=base+c;
+      const ch=F.ch[i];
+      if(ch==="")continue;
+      const acc=F.a[i]===1;
+      const s=clamp01(F.s[i]*(acc?P.as:P.s));
+      const l=clamp01(F.l[i]*(acc?(0.60+P.al):(0.75+P.al*0.5)));
+      if(l<=0.004)continue;
+      const col=hsl(F.h[i],s,l);
+      const xx=c*CW;
+      const sh=SHADE[ch];
+      if(sh!==undefined){
+        ctx.globalAlpha=sh;
+        ctx.fillStyle="rgb("+col[0]+","+col[1]+","+col[2]+")";
+        ctx.fillRect(xx,yy,CW+0.5,CH+0.5);
+        ctx.globalAlpha=1;continue;
+      }
+      const hb=HALFB[ch];
+      if(hb!==undefined){
+        ctx.fillStyle="rgb("+col[0]+","+col[1]+","+col[2]+")";
+        ctx.fillRect(xx,yy+CH*(1-hb),CW+0.5,CH*hb+0.5);continue;
+      }
+      if(deep&&l>0.30){                    /* subpixel aberration, not cell offset */
+        ctx.fillStyle="rgba("+col[0]+",0,0,0.45)";
+        ctx.fillText(ch,xx-CHROMA,yy);
+        ctx.fillStyle="rgba(0,"+col[1]+","+col[2]+",0.45)";
+        ctx.fillText(ch,xx+CHROMA,yy);
+      }
+      ctx.fillStyle="rgb("+col[0]+","+col[1]+","+col[2]+")";
+      ctx.fillText(ch,xx,yy);
+      if(acc&&l>0.50){                     /* cheap 4-tap halo */
+        ctx.globalAlpha=0.13;
+        ctx.fillText(ch,xx-1,yy);ctx.fillText(ch,xx+1,yy);
+        ctx.fillText(ch,xx,yy-1);ctx.fillText(ch,xx,yy+1);
+        ctx.globalAlpha=1;
+      }
+    }
+  }
+  /* CRT lines drawn INTO the canvas so the saved plate matches
+     the screen; v0.1.0 put them in a CSS ::after that toDataURL
+     could never see. */
+  if(scanPat){ctx.fillStyle=scanPat;ctx.fillRect(0,0,cols*CW,rows*CH);}
+  const scanY=(ct.t*0.6)%rows;
+  ctx.fillStyle="rgba(255,255,255,0.016)";
+  ctx.fillRect(0,scanY*CH,cols*CW,CH);
+  /* edge vignette - gradients, not a flat wash over the gutters */
+  try{
+    const gw=MN(cols*CW*0.18,220);
+    let gr=ctx.createLinearGradient(0,0,gw,0);
+    gr.addColorStop(0,"rgba(0,0,0,0.55)");gr.addColorStop(1,"rgba(0,0,0,0)");
+    ctx.fillStyle=gr;ctx.fillRect(0,0,gw,rows*CH);
+    gr=ctx.createLinearGradient(cols*CW,0,cols*CW-gw,0);
+    gr.addColorStop(0,"rgba(0,0,0,0.55)");gr.addColorStop(1,"rgba(0,0,0,0)");
+    ctx.fillStyle=gr;ctx.fillRect(cols*CW-gw,0,gw,rows*CH);
+  }catch(e){}
+  if(ct.creak){
+    const m="HULL CREAK \u00b7 "+MR(ct.life.hull)+"%";
+    const cc=hsl(Z.acc,1,0.60);
+    ctx.fillStyle="rgb("+cc[0]+","+cc[1]+","+cc[2]+")";
+    ctx.fillText(m,cols*CW-14-ctx.measureText(m).width,rows*CH-CH*3);
+  }
+}
+
+/* ---------- tick / render ---------- */
+function abyssTick(){
+  tick++;
+  if(space)tick++;
+  timeOff+=scrollVel;scrollVel*=0.86;
+  if(MA(scrollVel)<0.01)scrollVel=0;
+  if(timeOff<-tick)timeOff=-tick;            /* scrub backwards, floor at t0 */
+  if(timeOff>MAXT)timeOff=MAXT;
+  if(showHelp&&++helpT>300)showHelp=false;
+}
+function render(){
+  const vt=MX(0,MF(tick+timeOff));
+  const ct=ctxAt(vt);
+  buildField(ct);
+  const F=moshFrame(ct);
+  raster(F,ct);
+  swapFrames();
+}
+function reseed(seed){
+  SEED=seed;HASH=seed;
+  /* determinism: SEEDN is DERIVED from the hash. v0.1.0 set it
+     from Math.random(), so one hash rendered a different piece
+     on every load and the token contract was void. */
+  const s=cyrb128(seed);
+  SEEDN=(s[0]%1000000)/997.0;
+  SEEDI=(s[1]^MI(s[2],2654435761))|0;
+  diveCache.clear();crewCache.clear();creakCache.clear();lifeCache.clear();
+  tick=0;timeOff=0;scrollVel=0;PREV_OK=false;
+  if(PREV)clearBuf(PREV);
+}
+
+/* ---------- fixed-clock loop ---------- */
+function loop(ts){
+  requestAnimationFrame(loop);
+  if(!lastT)lastT=ts;
+  acc+=ts-lastT;lastT=ts;
+  let steps=0;
+  while(acc>=TICK_MS&&steps<4){abyssTick();acc-=TICK_MS;steps++;}
+  if(acc>200)acc=0;
+  if(steps>0)render();
+}
+
+/* ---------- input ---------- */
+function bindInput(){
+  addEventListener("resize",()=>{resize();render();});
+  addEventListener("wheel",e=>{e.preventDefault();scrollVel+=e.deltaY*0.12;},{passive:false});
+  addEventListener("keydown",e=>{
+    const k=e.key;
+    if(k===" "){space=true;return;}
+    if(k==="r"||k==="R"){reseed(newHash());location.hash=SEED;}
+    else if(k==="p"||k==="P")PALI=(PALI+1)%PALETTES.length;
+    else if(k>="1"&&k<="6")PALI=MN(PALETTES.length-1,+k-1);
+    else if(k==="m"||k==="M"){moshAmt=moshAmt>=1.75?0:MR((moshAmt+0.25)*100)/100;}
+    else if(k==="d"||k==="D"){timeOff+=900;if(timeOff>MAXT)timeOff=MAXT;}
+    else if(k==="h"||k==="H"){showHelp=!showHelp;helpT=0;}
+    else if(k==="s"||k==="S"){
+      const a=document.createElement("a");
+      a.download="abyss_"+HASH.slice(0,10)+"_t"+MF(tick+timeOff)+".png";
+      a.href=cv.toDataURL("image/png");a.click();
+    }
+    else if(k==="f"||k==="F")toggleFullscreen();
+  });
+  addEventListener("keyup",e=>{if(e.key===" ")space=false;});
+  addEventListener("dblclick",toggleFullscreen);
+}
+function toggleFullscreen(){
+  if(document.fullscreenElement)document.exitFullscreen();
+  else document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();
+}
+
+/* ---------- boot ---------- */
+function boot(){
+  cv=document.getElementById("cv");
+  ctx=cv.getContext("2d");
+  resize();
+  const h=(typeof location!=="undefined"&&location.hash)
+    ?decodeURIComponent(location.hash.slice(1)):newHash();
+  reseed(h);
+  if(typeof location!=="undefined")location.hash=SEED;
+  bindInput();
+  render();
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   VERIFICATION SURFACE
+   Exposed so verify_abyss.js can drive the deterministic core
+   headlessly. Nothing here is used by the piece itself.
+   ============================================================ */
+var __ABYSS={
+  CONTRACT,PALETTES,SNOWL,_h31:h31,_vn:vn,_S:S,
+  attach(canvas,w,h){
+    cv=canvas;ctx=canvas.getContext("2d");
+    measureCell();layout(w||1600,h||900);
+    try{ctx.textBaseline="top";}catch(e){}
+  },
+  reseed,setPalette(i){PALI=i;},setMosh(v){moshAmt=v;},
+  setHelp(v){showHelp=v;},
+  dims(){return{cols,rows,GL,GR,TOPY,BOTY,CW,CH,rowsHalf,WIDE,MIDC};},
+  ctxAt,buildField,moshFrame,swapFrames,raster,
+  resetCodec(){PREV_OK=false;if(PREV)clearBuf(PREV);},
+  frameAt(vt){const ct=ctxAt(vt);buildField(ct);const F=moshFrame(ct);swapFrames();return{ct,F:PREV};},
+  cleanAt(vt){const ct=ctxAt(vt);return{ct,F:buildField(ct)};},
+  diveAt,diveParams,phaseOf,depthAt,lifeAt,zoneName,zoneParams,
+  crew,levi,vents,creakList,activeCreak,
+  get seed(){return SEED;},get seedn(){return SEEDN;}
+};
+if(typeof document!=="undefined"&&document.getElementById&&document.getElementById("cv"))boot();
+</script>
+</body>
+</html>
