@@ -355,8 +355,16 @@
             blockAmt: 0.02, blockSize: 2, chromaBleed: 0.6, bitCrush: 0.4,
             displace: 0.45, smear: 0.35, decay: 0.002, grain: 0.3,
             interval: 90, marks: 3, markScale: 0.42, ink: 0.85,
+            // Derived from the seed at init (see derivePalette). Still holds
+            // the resolved [stain, inkA, inkB] triple, so resolveColors() and
+            // the uStain uniform downstream are unchanged.
             colorPalette: ['#000000', '#ff2e2e', '#f03838']
         };
+
+        // Set to a ['stain','inkA','inkB'] triple to pin every seed to one
+        // palette; null lets the seed drive it. The red build was:
+        //   const PALETTE_LOCK = ['#000000', '#ff2e2e', '#f03838'];
+        const PALETTE_LOCK = null;
         let defaultParams = JSON.parse(JSON.stringify(params));
 
         // Screensaver: a new composition each time the saver wakes.
@@ -508,6 +516,136 @@ void main() {
             };
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // PALETTE — deterministic from the seed, constrained by the medium.
+        //
+        // Drawn from its OWN rng substream, not the one inscribe() consumes,
+        // so palette and composition vary independently and editing this code
+        // cannot shift the marks of an existing seed.
+        //
+        // The constraints are not taste, they are what survives the codec:
+        //   · chroma subsampling averages chroma across a block, so two inks
+        //     separated only by hue converge. They need a LUMA gap as well.
+        //   · decay pulls the field toward the stain, so ink-to-stain luma
+        //     separation is the budget the whole run spends down.
+        //   · extreme luma starves chroma, so inks are held in a mid band.
+        // Floors are enforced in Rec.601 — the space the shader actually
+        // destroys in — rather than in sRGB or HSL.
+        // ═══════════════════════════════════════════════════════════════════════
+
+        const MIN_INK_STAIN_LUMA = 0.30;   // ink legibility budget vs residue
+        const MIN_INK_INK_LUMA   = 0.13;   // survives total chroma collapse
+        const MONO_INK_INK_LUMA  = 0.22;   // mono has no hue cue, needs more
+        const MIN_INK_CHROMA     = 0.055;  // below this an ink reads as grey
+        const INK_Y_LO = 0.40, INK_Y_HI = 0.80;
+
+        const _c01 = x => x < 0 ? 0 : x > 1 ? 1 : x;
+        function hsl2rgb(h, s, l) {
+            h = ((h % 360) + 360) % 360; s = _c01(s); l = _c01(l);
+            const c = (1 - Math.abs(2 * l - 1)) * s;
+            const x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = l - c / 2;
+            let r, g, b;
+            if (h < 60)       { r = c; g = x; b = 0; }
+            else if (h < 120) { r = x; g = c; b = 0; }
+            else if (h < 180) { r = 0; g = c; b = x; }
+            else if (h < 240) { r = 0; g = x; b = c; }
+            else if (h < 300) { r = x; g = 0; b = c; }
+            else              { r = c; g = 0; b = x; }
+            return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+        }
+        const toHex = rgb => '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+        const luma601 = rgb => (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255;
+        function chroma601(rgb) {
+            const y = luma601(rgb) * 255;
+            const cb = (rgb[2] - y) * 0.565, cr = (rgb[0] - y) * 0.713;
+            return Math.sqrt(cb * cb + cr * cr) / 255;
+        }
+        // Luma is monotonic in lightness at fixed hue/sat, so bisection always
+        // lands on the requested luma. Solving FOR luma, rather than picking a
+        // lightness and hoping, is what makes the floors guarantees.
+        function solveL(h, s, targetY) {
+            let lo = 0, hi = 1;
+            for (let i = 0; i < 28; i++) {
+                const mid = (lo + hi) / 2;
+                if (luma601(hsl2rgb(h, s, mid)) < targetY) lo = mid; else hi = mid;
+            }
+            return (lo + hi) / 2;
+        }
+
+        const HARMONY = [
+            { name: 'complement', w: 0.22, mono: false, off: () => 180 },
+            { name: 'split',      w: 0.20, mono: false, off: r => (r() < 0.5 ? 150 : 210) },
+            { name: 'triad',      w: 0.18, mono: false, off: r => (r() < 0.5 ? 120 : 240) },
+            { name: 'analogous',  w: 0.22, mono: false, off: r => (r() < 0.5 ? -1 : 1) * (26 + r() * 22) },
+            { name: 'monochrome', w: 0.18, mono: true,  off: r => (r() < 0.5 ? -1 : 1) * (4 + r() * 10) }
+        ];
+        function pickHarmony(r) {
+            let t = r() * HARMONY.reduce((a, h) => a + h.w, 0);
+            for (const h of HARMONY) if ((t -= h.w) <= 0) return h;
+            return HARMONY[0];
+        }
+
+        let paletteInfo = { scheme: 'locked', baseHue: 0 };
+
+        function derivePalette(seed) {
+            if (PALETTE_LOCK) { paletteInfo = { scheme: 'locked', baseHue: 0 }; return PALETTE_LOCK.slice(); }
+            const r = makeRng(Math.imul((seed ^ 0x9E3779B9) >>> 0, 2246822519) >>> 0);
+            const baseH = r() * 360;
+            const H = pickHarmony(r);
+            const gap = H.mono ? MONO_INK_INK_LUMA : MIN_INK_INK_LUMA;
+            paletteInfo = { scheme: H.name, baseHue: Math.round(baseH) };
+
+            // stain: residue, never black — nothing physical decays to the
+            // absence of signal, and the shader already leans on that.
+            const stainH = baseH + (r() < 0.62 ? (r() - 0.5) * 40 : 180 + (r() - 0.5) * 40);
+            const sS = 0.22 + r() * 0.46;
+            const sY = 0.020 + r() * 0.075;
+            const stain = hsl2rgb(stainH, sS, solveL(stainH, sS, sY));
+
+            const floorY = Math.max(INK_Y_LO, luma601(stain) + MIN_INK_STAIN_LUMA);
+            const span = INK_Y_HI - floorY;
+
+            const aS = 0.70 + r() * 0.30;
+            const bH = baseH + H.off(r);
+            const bS = H.mono ? Math.min(1, aS * (0.50 + r() * 0.32)) : 0.62 + r() * 0.34;
+
+            const slack = Math.max(0, span - gap);
+            const lowY = floorY + r() * slack;
+            const highY = lowY + gap + 0.012 + r() * Math.max(0, span - gap - (lowY - floorY));
+            const aHigh = r() < 0.5;
+            let aY = aHigh ? highY : lowY;
+            let bY = aHigh ? lowY : highY;
+
+            let a = hsl2rgb(baseH, aS, solveL(baseH, aS, aY));
+            let b = hsl2rgb(bH, bS, solveL(bH, bS, bY));
+
+            // Extreme luma starves chroma. Walk the ink back toward mid-band;
+            // raising saturation cannot help at the ends of the range.
+            for (let i = 0; i < 12 && chroma601(a) < MIN_INK_CHROMA; i++) {
+                aY = Math.min(INK_Y_HI, Math.max(floorY, aY + (aY > 0.6 ? -0.03 : 0.03)));
+                a = hsl2rgb(baseH, aS, solveL(baseH, aS, aY));
+            }
+            if (!H.mono) for (let i = 0; i < 12 && chroma601(b) < MIN_INK_CHROMA; i++) {
+                bY = Math.min(INK_Y_HI, Math.max(floorY, bY + (bY > 0.6 ? -0.03 : 0.03)));
+                b = hsl2rgb(bH, bS, solveL(bH, bS, bY));
+            }
+            // The rescue can walk the inks back together. Repair separation
+            // last, so the luma floor is not silently traded away for chroma.
+            for (let i = 0; i < 16; i++) {
+                if (Math.abs(luma601(a) - luma601(b)) >= gap + 0.012) break;
+                if (luma601(a) > luma601(b)) {
+                    if (aY < INK_Y_HI - 0.01) aY = Math.min(INK_Y_HI, aY + 0.02);
+                    else bY = Math.max(floorY, bY - 0.02);
+                } else {
+                    if (bY < INK_Y_HI - 0.01) bY = Math.min(INK_Y_HI, bY + 0.02);
+                    else aY = Math.max(floorY, aY - 0.02);
+                }
+                a = hsl2rgb(baseH, aS, solveL(baseH, aS, aY));
+                b = hsl2rgb(bH, bS, solveL(bH, bS, bY));
+            }
+            return [toHex(stain), toHex(a), toHex(b)];
+        }
+
         function setup() {
             const c = createCanvas(W, H, WEBGL);
             c.parent('canvas-container');
@@ -541,6 +679,7 @@ void main() {
         function initializeSystem() {
             randomSeed(params.seed); noiseSeed(params.seed);
             rng = makeRng(Math.imul(params.seed, 2654435761) >>> 0);
+            params.colorPalette = derivePalette(params.seed);
             resolveColors();
             generation = 0; flip = false;
             if (!glOK) return;
@@ -1047,6 +1186,7 @@ void main() {
                 `<div>BLOCK <b>${params.blockSize}px</b> @ ${(params.blockAmt * 100).toFixed(0)}%</div>` +
                 `<div>CHROMA <b>${(params.chromaBleed * 100).toFixed(0)}%</b></div>` +
                 `<div>LEVELS <b>${Math.round(64 - params.bitCrush * 59)}</b></div>` +
+                `<div>PALETTE <b>${paletteInfo.scheme}</b> @ ${paletteInfo.baseHue}\u00b0</div>` +
                 `<div>DECAY <b>${params.decay}</b>/gen</div>` +
                 `<div>HALF-LIFE <b>${(Math.log(0.5) / Math.log(1 - params.decay)).toFixed(0)}</b> gen</div>`;
         }
